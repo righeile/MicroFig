@@ -1,0 +1,42 @@
+# Python environment and byte-code caches.  Built from requirements.txt, so they
+# are reproducible and by far the largest thing in the folder.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# Written by the app at run time.  `.uploads/` is where drag-and-dropped files
+# land, so it holds specimen data; `sessions/` records absolute paths on one
+# machine and means nothing on another.  Both are recreated on start.
+.uploads/
+sessions/
+
+# Microscope data and exported figures.  A single .czi can be larger than
+# everything else combined, and an exported figure is an output, not a source.
+*.czi
+*.tif
+*.tiff
+*.nd2
+*.lif
+*.lsm
+*.ims
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+# ... except anything the interface itself ships.
+!static/**/*.png
+!static/**/*.svg
+!labkit/static/**/*.png
+!labkit/static/**/*.svg
+
+# Editor and assistant config, specific to one machine.
+.claude/
+.vscode/
+.idea/
+
+# OS clutter.
+.DS_Store
+Thumbs.db

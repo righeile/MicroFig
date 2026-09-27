@@ -1,0 +1,8 @@
+flask>=3.0
+matplotlib>=3.7        # labkit's shared plotting style
+numpy>=1.24
+pillow>=10.0
+scipy>=1.10
+aicsimageio>=4.11
+aicspylibczi>=3.1      # CZI support
+tifffile>=2023.2

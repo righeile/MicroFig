@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MicroFigure</title>
+<link rel="stylesheet" href="/static/labkit.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Micro<span>Figure</span><small class="brand-by">by Matrix MetalloProteinase</small></div>
+  <button id="btn-open" class="btn primary">Open images…</button>
+  <button id="btn-add" class="btn">Add to figure…</button>
+  <div class="spacer"></div>
+  <label class="inline"><span>Session</span>
+    <select id="session-select"><option value="">—</option></select>
+  </label>
+  <button id="btn-session-save" class="btn small">Save</button>
+  <button id="btn-session-del" class="btn small">Delete</button>
+  <div class="divider"></div>
+  <label class="inline"><span>Preset</span>
+    <select id="preset-select"><option value="">—</option></select>
+  </label>
+  <button id="btn-preset-save" class="btn small">Save</button>
+  <button id="btn-preset-del" class="btn small">Delete</button>
+  <div class="divider"></div>
+  <button id="btn-export-svg" class="btn primary">Export SVG</button>
+  <select id="export-format" class="mini">
+    <option value="svg">SVG</option><option value="png">PNG</option>
+    <option value="tiff">TIFF</option><option value="pdf">PDF</option>
+  </select>
+  <button id="btn-export-batch" class="btn">Batch export…</button>
+</header>
+
+<div class="app">
+
+  <!-- ================= LEFT : images ================= -->
+  <aside class="panel left">
+    <div class="sec-title">Figure images <span id="img-count" class="pill">0</span></div>
+    <div id="image-list" class="image-list"></div>
+    <div class="hint" id="empty-hint">
+      Click <b>Open images…</b> to browse your drive, or drop files anywhere on this window.
+    </div>
+
+    <div class="sec-title">Row / group labels</div>
+    <div class="row">
+      <label class="grow">Auto-label from filename
+        <select id="autolabel-mode">
+          <option value="none">off</option>
+          <option value="token">token by _</option>
+          <option value="regex">regex</option>
+          <option value="stem">whole filename</option>
+        </select>
+      </label>
+    </div>
+    <div class="row" id="autolabel-token-row">
+      <label>Token index <input type="number" id="autolabel-token" value="4" min="0" step="1"></label>
+      <button class="btn small" id="btn-apply-labels">Apply</button>
+    </div>
+    <div class="row hidden" id="autolabel-regex-row">
+      <label class="grow">Regex (first group)
+        <input type="text" id="autolabel-regex" value="_([A-Za-z0-9]+)_" spellcheck="false">
+      </label>
+    </div>
+    <div class="row">
+      <button class="btn small" id="btn-sort-label">Sort by label</button>
+      <button class="btn small" id="btn-sort-name">Sort by name</button>
+      <button class="btn small danger" id="btn-clear">Clear all</button>
+    </div>
+
+    <div class="sec-title">Source</div>
+    <div class="row">
+      <label>Z <select id="z-mode">
+        <option value="max">max project</option>
+        <option value="mean">mean project</option>
+        <option value="sum">sum</option>
+        <option value="single">single slice</option>
+      </select></label>
+      <label class="narrow">slice <input type="number" id="z-index" value="0" min="0"></label>
+    </div>
+    <div class="row">
+      <label class="narrow">T <input type="number" id="t-index" value="0" min="0"></label>
+      <label class="narrow">Scene <input type="number" id="scene-index" value="0" min="0"></label>
+      <button class="btn small" id="btn-reload">Reload</button>
+    </div>
+    <div class="row">
+      <label class="grow">Preview quality
+        <select id="preview-quality">
+          <option value="600">fast (600 px)</option>
+          <option value="1000" selected>balanced (1000 px)</option>
+          <option value="1600">sharp (1600 px)</option>
+        </select>
+      </label>
+    </div>
+  </aside>
+
+  <!-- ================= CENTER : canvas ================= -->
+  <main class="stage">
+    <div class="stage-tools">
+      <div class="seg" id="tool-seg">
+        <button data-tool="select" class="active">Select</button>
+        <button data-tool="crop">Crop</button>
+        <button data-tool="inset">Inset ROI</button>
+      </div>
+      <div class="divider"></div>
+      <button class="btn small" id="btn-undo" title="Undo (⌘Z / Ctrl+Z)" disabled>↶</button>
+      <button class="btn small" id="btn-redo" title="Redo (⇧⌘Z / Ctrl+Y)" disabled>↷</button>
+      <div class="divider"></div>
+      <label class="inline"><span>Zoom</span>
+        <input type="range" id="zoom" min="5" max="800" value="100">
+        <span id="zoom-val" class="mono">100%</span>
+      </label>
+      <button class="btn small" id="btn-fit">Fit</button>
+      <div class="divider"></div>
+      <label class="chk"><input type="checkbox" id="show-guides" checked> guides</label>
+      <div class="spacer"></div>
+      <span id="stage-info" class="mono dim"></span>
+    </div>
+    <div class="canvas-wrap" id="canvas-wrap">
+      <canvas id="fig"></canvas>
+    </div>
+    <div class="stage-status" id="status">ready</div>
+  </main>
+
+  <!-- ================= RIGHT : controls ================= -->
+  <aside class="panel right">
+    <nav class="tabs pane" id="tabs">
+      <button data-tab="channels" class="active">Channels</button>
+      <button data-tab="layout">Layout</button>
+      <button data-tab="scale">Scale</button>
+      <button data-tab="labels">Labels</button>
+      <button data-tab="export">Export</button>
+    </nav>
+
+    <!-- ---- channels ---- -->
+    <section class="tabpage" data-page="channels">
+      <div class="row">
+        <label class="chk grow"><input type="checkbox" id="per-image-levels"> per-image levels</label>
+        <button class="btn small" id="btn-auto-all">Auto all</button>
+      </div>
+      <div id="channel-list"></div>
+      <div class="sec-title">Merge</div>
+      <div class="row">
+        <label class="grow">Blend
+          <select id="blend-mode">
+            <option value="add">additive (default)</option>
+            <option value="screen">screen</option>
+            <option value="max">maximum</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="invert-lut"> invert (dark on white)</label>
+      </div>
+      <div class="sec-title">Single-channel panels</div>
+      <div class="row">
+        <label class="grow">Draw lone channels in
+          <select id="mono-mode">
+            <option value="none">their own colour</option>
+            <option value="insets">grey — cut-outs only</option>
+            <option value="all">grey — everywhere</option>
+          </select>
+        </label>
+        <label class="narrow">grey <input type="color" id="mono-color" value="#ffffff"></label>
+      </div>
+      <div class="sec-title">Colour presets</div>
+      <div class="row wrap" id="palette-presets"></div>
+    </section>
+
+    <!-- ---- layout ---- -->
+    <section class="tabpage hidden" data-page="layout">
+      <div class="row">
+        <label class="grow">Template
+          <select id="template">
+            <option value="channels_merge">channels + merge (one row per image)</option>
+            <option value="channels_over_insets">channels + merge, insets below</option>
+            <option value="merge_inset_stack">merge + stacked insets (compact)</option>
+            <option value="merge_inset_row">merge + insets in a row</option>
+            <option value="grid">merge grid (n columns)</option>
+            <option value="channels_columns">images as columns, channels as rows</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Panel height <input type="number" id="panel-size" value="300" min="40" step="10"></label>
+        <label>Gap <input type="number" id="gap" value="6" min="0" step="1"></label>
+      </div>
+      <div class="row">
+        <label>Cells per row <input type="number" id="grid-cols" value="1" min="1" step="1"></label>
+        <label>Outer pad <input type="number" id="outer-pad" value="10" min="0" step="1"></label>
+      </div>
+      <div class="sec-title">Insets (zoomed cut-outs)</div>
+      <div class="row">
+        <label>Count <input type="number" id="inset-count" value="1" min="0" max="4" step="1"></label>
+        <label>W (src px) <input type="number" id="inset-size" value="200" min="8" step="10"></label>
+        <label>H (src px) <input type="number" id="inset-size-h" value="200" min="8" step="10"></label>
+      </div>
+      <div class="row">
+        <label class="chk grow"><input type="checkbox" id="link-inset-size" checked>
+          link cut-out size across all images</label>
+      </div>
+      <div class="row">
+        <label class="chk grow"><input type="checkbox" id="inset-box" checked> mark ROI on parent</label>
+        <label class="chk grow"><input type="checkbox" id="inset-leader"> leader lines</label>
+      </div>
+      <div class="row">
+        <label class="grow">ROI / inset outline <input type="color" id="inset-color" value="#ffffff"></label>
+        <label class="narrow">width <input type="number" id="inset-stroke" value="1.5" min="0" step="0.5"></label>
+      </div>
+      <div class="row">
+        <label class="chk grow"><input type="checkbox" id="inset-border" checked> outline the inset panel too</label>
+      </div>
+      <div class="sec-title">Crop</div>
+      <div class="row">
+        <label>X <input type="number" id="crop-x" value="0" step="10"></label>
+        <label>Y <input type="number" id="crop-y" value="0" step="10"></label>
+      </div>
+      <div class="row">
+        <label>W <input type="number" id="crop-w" value="0" step="10"></label>
+        <label>H <input type="number" id="crop-h" value="0" step="10"></label>
+      </div>
+      <div class="row">
+        <label>Rotation° <input type="number" id="rotation" value="0" step="0.5"></label>
+        <button class="btn small" id="btn-crop-reset">Full frame</button>
+        <button class="btn small" id="btn-crop-all">Apply to all</button>
+      </div>
+      <div class="sec-title">Canvas</div>
+      <div class="row">
+        <label class="grow">Background <input type="color" id="bg-color" value="#ffffff"></label>
+        <label class="chk"><input type="checkbox" id="bg-transparent"> transparent</label>
+      </div>
+    </section>
+
+    <!-- ---- scale ---- -->
+    <section class="tabpage hidden" data-page="scale">
+      <div class="row">
+        <label class="grow">Pixel size (µm/px)
+          <input type="number" id="pixel-size" step="0.0001" value="0">
+        </label>
+      </div>
+      <div class="row"><span class="hint" id="pixel-src">—</span></div>
+      <div class="row">
+        <button class="btn small" id="btn-px-from-meta">From metadata</button>
+        <button class="btn small" id="btn-px-all">Apply to all</button>
+      </div>
+      <div class="sec-title">Scale bars</div>
+      <div class="row">
+        <label class="chk grow"><input type="checkbox" id="sb-on" checked> show scale bars</label>
+      </div>
+      <div class="row">
+        <label>Main (µm) <input type="number" id="sb-len" value="20" step="1" min="0"></label>
+        <label class="chk"><input type="checkbox" id="sb-auto" checked> auto</label>
+      </div>
+      <div class="row">
+        <label>Inset (µm) <input type="number" id="sb-len-inset" value="5" step="0.5" min="0"></label>
+        <label class="chk"><input type="checkbox" id="sb-auto-inset" checked> auto</label>
+      </div>
+      <div class="row">
+        <label class="grow">Placement
+          <select id="sb-where">
+            <option value="first">first panel of each row</option>
+            <option value="last">last panel of each row</option>
+            <option value="all">every panel</option>
+            <option value="once">once, first panel only</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label class="grow">Corner
+          <select id="sb-corner">
+            <option value="br">bottom right</option><option value="bl">bottom left</option>
+            <option value="tr">top right</option><option value="tl">top left</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Thickness <input type="number" id="sb-thick" value="4" min="1" step="0.5"></label>
+        <label>Margin <input type="number" id="sb-margin" value="10" min="0" step="1"></label>
+      </div>
+      <div class="row">
+        <label class="grow">Colour <input type="color" id="sb-color" value="#ffffff"></label>
+        <label class="chk"><input type="checkbox" id="sb-label"> label</label>
+      </div>
+      <div class="row">
+        <label class="narrow">Label size <input type="number" id="sb-label-size" value="11" min="4" step="1"></label>
+        <label class="grow">Units
+          <select id="sb-units"><option value="um">µm</option><option value="nm">nm</option></select>
+        </label>
+      </div>
+      <div class="hint" id="mag-info"></div>
+    </section>
+
+    <!-- ---- labels ---- -->
+    <section class="tabpage hidden" data-page="labels">
+      <div class="row">
+        <label class="grow">Font
+          <select id="font-family">
+            <option>Arial</option><option>Helvetica</option>
+            <option>Times New Roman</option><option>Calibri</option>
+          </select>
+        </label>
+      </div>
+      <div class="sec-title">Channel titles</div>
+      <div class="row">
+        <label class="grow">Show
+          <select id="title-mode">
+            <option value="top">above first row</option>
+            <option value="each">on every panel</option>
+            <option value="inside">inside panel (overlay)</option>
+            <option value="none">off</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Size <input type="number" id="title-size" value="12" min="4" step="1"></label>
+        <label class="grow">Colour <input type="color" id="title-color" value="#000000"></label>
+        <label class="chk"><input type="checkbox" id="title-bold"> bold</label>
+      </div>
+      <div class="row">
+        <label class="chk grow"><input type="checkbox" id="title-color-by-channel" checked>
+          colour titles by channel</label>
+      </div>
+      <div class="row">
+        <label class="chk grow"><input type="checkbox" id="title-first-only">
+          label the first cell only</label>
+      </div>
+      <div class="sec-title">Row labels</div>
+      <div class="row">
+        <label class="grow">Show
+          <select id="rowlabel-mode">
+            <option value="left">left gutter</option>
+            <option value="inside">inside first panel</option>
+            <option value="none">off</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Size <input type="number" id="rowlabel-size" value="12" min="4" step="1"></label>
+        <label>Width <input type="number" id="rowlabel-width" value="70" min="0" step="5"></label>
+        <label class="chk"><input type="checkbox" id="rowlabel-rotate"> rotate</label>
+      </div>
+      <div class="row">
+        <label class="grow">Colour <input type="color" id="rowlabel-color" value="#000000"></label>
+        <label class="chk"><input type="checkbox" id="rowlabel-italic"> italic</label>
+      </div>
+      <div class="sec-title">Figure title</div>
+      <div class="row">
+        <label class="grow">Text <input type="text" id="fig-title" placeholder="(optional)"></label>
+      </div>
+      <div class="row">
+        <label>Size <input type="number" id="fig-title-size" value="14" min="4" step="1"></label>
+        <label class="grow">Colour <input type="color" id="fig-title-color" value="#000000"></label>
+      </div>
+      <div class="sec-title">Placing labels by hand</div>
+      <div class="hint">Drag any label on the canvas to move it. Right-click turns it 90°
+        (shift+right-click the other way), <b>R</b> does the same for the selected label,
+        and the arrow keys nudge it (hold shift for 10 units). Positions are saved with
+        the preset and used by the export.</div>
+      <div class="row">
+        <label class="chk grow"><input type="checkbox" id="link-labels" checked>
+          apply moves and turns to every label of the same kind</label>
+      </div>
+      <div class="row">
+        <button class="btn small grow" id="btn-labels-reset">Reset all label positions</button>
+      </div>
+      <div class="sec-title">Panel letters</div>
+      <div class="row">
+        <label class="grow">Style
+          <select id="panel-letters">
+            <option value="none">off</option>
+            <option value="upper">A, B, C — per row</option>
+            <option value="lower">a, b, c — per row</option>
+            <option value="upper_all">A, B, C — per panel</option>
+          </select>
+        </label>
+        <label>Size <input type="number" id="letter-size" value="13" min="4" step="1"></label>
+      </div>
+    </section>
+
+    <!-- ---- export ---- -->
+    <section class="tabpage hidden" data-page="export">
+      <div class="row">
+        <label class="grow">Figure width (mm) <input type="number" id="exp-width-mm" value="180" min="10" step="1"></label>
+      </div>
+      <div class="row">
+        <button class="btn small" data-mm="85">85 (1 col)</button>
+        <button class="btn small" data-mm="114">114 (1.5)</button>
+        <button class="btn small" data-mm="180">180 (2 col)</button>
+      </div>
+      <div class="row">
+        <label class="grow">Raster DPI inside SVG
+          <select id="exp-dpi">
+            <option value="150">150</option><option value="300" selected>300</option>
+            <option value="600">600</option><option value="1200">1200</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label class="chk grow"><input type="checkbox" id="exp-upsample"> allow upsampling above native</label>
+      </div>
+      <div class="row">
+        <label class="grow">File name <input type="text" id="exp-name" value="figure"></label>
+      </div>
+      <div class="row">
+        <label class="grow">Save folder (blank = download)
+          <input type="text" id="exp-dir" placeholder="/Users/…/Desktop" spellcheck="false"></label>
+      </div>
+      <div class="row">
+        <button class="btn primary grow" id="btn-export-2">Export figure</button>
+      </div>
+      <div class="sec-title">Batch: one file per image</div>
+      <div class="hint">Renders the current template separately for every image in the list
+        and writes one file each, named after the source image.</div>
+      <div class="row">
+        <label class="grow">Output folder <input type="text" id="batch-dir" placeholder="/Users/…/figures"></label>
+      </div>
+      <div class="row">
+        <button class="btn grow" id="btn-batch-run">Run batch export</button>
+      </div>
+      <div class="sec-title">Verify</div>
+      <div class="row">
+        <button class="btn small grow" id="btn-server-preview">Server render check</button>
+      </div>
+      <div class="hint">Renders the figure through the same code path as the export and
+        shows it, so you can confirm the preview matches the file.</div>
+      <div id="server-preview"></div>
+    </section>
+  </aside>
+</div>
+
+<div id="drop-overlay" class="hidden"><div>Drop microscopy files to load</div></div>
+<div id="busy" class="hidden"><div class="spinner"></div><span id="busy-text">working…</span></div>
+
+<script src="/static/labkit.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
