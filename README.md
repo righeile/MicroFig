@@ -279,7 +279,7 @@ app.py       Flask routes: browse, open, plane data, export, presets
 imgio.py     file reading, metadata, channel statistics, LRU stack cache
 render.py    levels, compositing, SVG and raster writers
 static/      index.html, app.css, app.js  (no build step, no CDN)
-selftest.py  runs both halves of the levels maths and compares them
+selftest.py  runs the browser's own compositor against render.py's
 ```
 
 Decoded stacks are cached in memory up to ~3.5 GB and evicted least-recently-used.
@@ -288,9 +288,20 @@ slider re-renders every panel of the figure without touching the server.
 
 The browser composites through a 65 536-entry lookup table per channel, packed one
 RGBA word per level, so a single-channel panel is one lookup and one store per pixel.
-Finished panels are cached under a key that carries the colour, levels, blend and
-invert, which is why turning a channel off and on again is free. Only a change of the
-plane data itself — a reload, or a different preview resolution — throws that away.
+It composites only what the panel actually shows. Each plane keeps halved copies of
+itself, and a panel reads the coarsest one that still holds a sample per screen pixel,
+then cuts out the rectangle it needs rather than the whole plane. A twelve-panel
+figure at fit zoom composites 0.8 M pixels instead of 3.1 M, and redraws in 10 ms
+instead of 59. Averaging the raw plane before applying levels is also what the server
+does before it composites, so this moves the preview towards the export rather than
+away from it: an off-edge cut-out now shows the same black margin on screen that comes
+out in the file.
+
+Finished tiles are cached under a key that carries the colour, levels, blend, invert,
+resolution and rectangle, which is why turning a channel off and on again is free, and
+why panning slides through a tile instead of rebuilding one. Only a change of the plane
+data itself — a reload, or a different preview resolution — throws that away.
 Single-channel panels are byte-identical to the export; an additive merge sums
 already-rounded bytes on the client and floats on the server, so it can differ by one
-level out of 255. `selftest.py` holds both claims.
+level out of 255. `selftest.py` holds both claims, and checks the halving and the
+cut-out against the server's own code.

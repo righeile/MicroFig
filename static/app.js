@@ -90,6 +90,8 @@ async function loadPlane(imgId, ch) {
   return rec;
 }
 
+function clearPlanes() { planes.clear(); mips.clear(); }
+
 async function ensurePlanes(img) {
   // In flight together: the browser caps its own connections, and the server is
   // threaded, so this is round-trips in parallel rather than one after another.
@@ -138,44 +140,82 @@ function lutFor(c) {
   return l;
 }
 
-// ---------------------------------------------- per-image composite canvases
-const compCache = new Map();          // key -> {canvas, px}
-let compCachePixels = 0;
-const COMP_CACHE_MAX_PX = 45e6;
+/* ---- plane pyramid ----
+   A panel almost always shows fewer pixels than the plane holds: a 300-unit
+   panel at 40% zoom is about 250 device pixels of a 1000-pixel plane, so
+   compositing all 1,000,000 of them to draw 62,000 was most of the work in a
+   redraw.  Each plane therefore keeps halved copies and the compositor reads
+   the coarsest one that still has a sample per device pixel.  Averaging the raw
+   plane and only then applying levels is also what render.py does before it
+   composites, so this moves the preview towards the export, not away from it. */
+const mips = new Map();               // `${imgId}:${ch}:${k}` -> {data, w, h}
 
-function compKey(img, chList) {
-  const sig = chList.map(c => `${c.index}:${c.color}:${c.black}:${c.white}:${c.gamma}:${c.gain}`).join(',');
-  return `${img.id}|${sig}|${S.blend}|${S.invert}`;
+function reduceHalf(data, w, h) {
+  const nw = Math.max(1, w >> 1), nh = Math.max(1, h >> 1);
+  const out = new Uint16Array(nw * nh);
+  const dy = h > 1 ? w : 0, dx = w > 1 ? 1 : 0;
+  for (let y = 0; y < nh; y++) {
+    const r0 = (y << 1) * w, r1 = r0 + dy;
+    for (let x = 0, i = y * nw; x < nw; x++, i++) {
+      const c0 = x << 1, c1 = c0 + dx;
+      out[i] = (data[r0 + c0] + data[r0 + c1] + data[r1 + c0] + data[r1 + c1] + 2) >> 2;
+    }
+  }
+  return { data: out, w: nw, h: nh };
 }
 
-function compositeCanvas(img, chList) {
-  const key = compKey(img, chList);
-  const hit = compCache.get(key);
-  if (hit) return hit.canvas;
-  const first = planes.get(`${img.id}:${chList.length ? chList[0].index : 0}`);
-  if (!first) return null;
-  const { w, h } = first, n = w * h;
-  const cv = document.createElement('canvas');
-  cv.width = w; cv.height = h;
-  const ctx = cv.getContext('2d', { willReadFrequently: false });
-  const id = ctx.createImageData(w, h);
-  const out = id.data;
-  const inv = S.invert;
-
-  const ds = [], ls = [];
-  for (const c of chList) {
-    const pl = planes.get(`${img.id}:${c.index}`);
-    if (!pl || pl.w !== w || pl.h !== h) continue;
-    ds.push(pl.data); ls.push(lutFor(c));
+function planeLevel(imgId, ch, k) {
+  const base = planes.get(`${imgId}:${ch}`);
+  if (!base || k <= 1) return base || null;
+  const key = `${imgId}:${ch}:${k}`;
+  let m = mips.get(key);
+  if (!m) {
+    const prev = planeLevel(imgId, ch, k >> 1);
+    if (!prev) return null;
+    m = reduceHalf(prev.data, prev.w, prev.h);
+    mips.set(key, m);
   }
-  const m = ds.length;
+  return m;
+}
 
-  if (m === 1 && !inv) {
+// --------------------------------------------------- per-panel composite tiles
+const compCache = new Map();          // key -> {canvas, px}
+let compCachePixels = 0;
+const COMP_CACHE_MAX_PX = 24e6;
+const COMP_CACHE_MAX_N = 240;
+// Tile origins snap to this grid so that panning slides through a tile rather
+// than rebuilding one every frame; it costs up to 64 pixels of margin per side.
+const TILE_GRID = 32;
+
+function compKey(img, chList, k, x0, y0, tw, th) {
+  const sig = chList.map(c => `${c.index}:${c.color}:${c.black}:${c.white}:${c.gamma}:${c.gain}`).join(',');
+  return `${img.id}|${sig}|${S.blend}|${S.invert}|${k}|${x0},${y0},${tw},${th}`;
+}
+
+/* Cut tw x th out of a plane at (x0, y0), zero outside it -- the same zero
+   padding render.py's _crop_stack uses, so a cut-out hanging off the edge of
+   the image looks on screen the way it comes out in the file. */
+function tileFrom(lvl, x0, y0, tw, th) {
+  const out = new Uint16Array(tw * th);
+  const sx0 = Math.max(0, x0), sx1 = Math.min(lvl.w, x0 + tw);
+  const sy0 = Math.max(0, y0), sy1 = Math.min(lvl.h, y0 + th);
+  if (sx1 > sx0) {
+    for (let y = sy0; y < sy1; y++)
+      out.set(lvl.data.subarray(y * lvl.w + sx0, y * lvl.w + sx1), (y - y0) * tw + (sx0 - x0));
+  }
+  return out;
+}
+
+/* The pixel loop, kept free of the DOM so selftest.py can run it against
+   render.py's compositor.  `out` is RGBA, four bytes per pixel. */
+function compositePixels(ds, ls, n, blend, invert, out) {
+  const m = ds.length;
+  if (m === 1 && !invert) {
     // One channel is the same picture under every blend, so the packed LUT can
     // go straight out as whole pixels -- the path most panels in a figure take.
-    const o32 = new Uint32Array(out.buffer), d = ds[0], P = ls[0].P;
+    const o32 = new Uint32Array(out.buffer, out.byteOffset, n), d = ds[0], P = ls[0].P;
     for (let i = 0; i < n; i++) o32[i] = P[d[i]];
-  } else if (S.blend === 'screen') {
+  } else if (blend === 'screen') {
     const acc = new Float32Array(n * 3);
     for (let ci = 0; ci < m; ci++) {
       const d = ds[ci], { R, G, B } = ls[ci];
@@ -189,13 +229,13 @@ function compositeCanvas(img, chList) {
     for (let i = 0, j = 0, k = 0; i < n; i++, j += 3, k += 4) {
       let r = acc[j], g = acc[j + 1], b = acc[j + 2];
       if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
-      out[k] = inv ? 255 - r : r;
-      out[k + 1] = inv ? 255 - g : g;
-      out[k + 2] = inv ? 255 - b : b;
+      out[k] = invert ? 255 - r : r;
+      out[k + 1] = invert ? 255 - g : g;
+      out[k + 2] = invert ? 255 - b : b;
       out[k + 3] = 255;
     }
   } else {
-    const mx = S.blend === 'max';
+    const mx = blend === 'max';
     for (let i = 0, k = 0; i < n; i++, k += 4) {
       let r = 0, g = 0, b = 0;
       for (let ci = 0; ci < m; ci++) {
@@ -204,23 +244,42 @@ function compositeCanvas(img, chList) {
         else { r += x; g += y; b += z; }
       }
       if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
-      out[k] = inv ? 255 - r : r;
-      out[k + 1] = inv ? 255 - g : g;
-      out[k + 2] = inv ? 255 - b : b;
+      out[k] = invert ? 255 - r : r;
+      out[k + 1] = invert ? 255 - g : g;
+      out[k + 2] = invert ? 255 - b : b;
       out[k + 3] = 255;
     }
   }
+}
+
+function compositeTile(img, chList, k, x0, y0, tw, th) {
+  const key = compKey(img, chList, k, x0, y0, tw, th);
+  const hit = compCache.get(key);
+  if (hit) return hit.canvas;
+
+  const ds = [], ls = [];
+  for (const c of chList) {
+    const lvl = planeLevel(img.id, c.index, k);
+    if (!lvl) continue;
+    ds.push(tileFrom(lvl, x0, y0, tw, th)); ls.push(lutFor(c));
+  }
+  const tile = document.createElement('canvas');
+  tile.width = tw; tile.height = th;
+  const ctx = tile.getContext('2d', { willReadFrequently: false });
+  const id = ctx.createImageData(tw, th);
+  compositePixels(ds, ls, tw * th, S.blend, S.invert, id.data);
   ctx.putImageData(id, 0, 0);
 
-  const px = w * h;
+  const px = tw * th;
   compCachePixels += px;
-  compCache.set(key, { canvas: cv, px });
-  while (compCachePixels > COMP_CACHE_MAX_PX && compCache.size > 1) {
+  compCache.set(key, { canvas: tile, px });
+  while ((compCachePixels > COMP_CACHE_MAX_PX || compCache.size > COMP_CACHE_MAX_N) &&
+         compCache.size > 1) {
     const oldest = compCache.keys().next().value;
     compCachePixels -= compCache.get(oldest).px;
     compCache.delete(oldest);
   }
-  return cv;
+  return tile;
 }
 
 /* Only for a change of the plane data itself (a reload, a different preview
@@ -777,6 +836,8 @@ const cv = $('fig'), cx = cv.getContext('2d');
 let lastPlan = null;
 let textBoxes = [];       // on-canvas footprint of every label, refilled each draw
 
+let curDpr = 1;                  // device pixel ratio of the last draw
+
 const rotCache = new Map();
 function rotatedComposite(base, angle) {
   if (!angle) return base;
@@ -799,7 +860,7 @@ function rotatedComposite(base, angle) {
 function drawPreview() {
   const plan = buildPlan();
   lastPlan = plan;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = curDpr = Math.min(window.devicePixelRatio || 1, 2);
   const z = S.zoom;
   const bw = Math.max(1, Math.round(plan.width * z * dpr));
   const bh = Math.max(1, Math.round(plan.height * z * dpr));
@@ -881,21 +942,42 @@ function drawPanelItem(it) {
     return Object.assign({}, full, c);
   });
   if (!chList.length) { cx.fillStyle = '#111'; cx.fillRect(it.x, it.y, it.w, it.h); return; }
-  let base = compositeCanvas(img, chList);
-  if (!base) {
+  const pl = planes.get(`${img.id}:${chList[0].index}`);
+  if (!pl) {
     cx.fillStyle = '#181b20'; cx.fillRect(it.x, it.y, it.w, it.h);
     cx.fillStyle = '#555'; cx.font = '10px sans-serif'; cx.textAlign = 'center';
     cx.fillText('loading…', it.x + it.w / 2, it.y + it.h / 2);
     return;
   }
-  base.__k = compKey(img, chList);
-  const canvasSrc = rotatedComposite(base, img.rotation || 0);
-  const pl = planes.get(`${img.id}:${chList[0].index}`);
-  const f = pl ? pl.factor : 1;
+  const f = pl.factor;
   cx.save();
   cx.beginPath(); cx.rect(it.x, it.y, it.w, it.h); cx.clip();
-  cx.drawImage(canvasSrc, it.src.x / f, it.src.y / f, it.src.w / f, it.src.h / f,
-               it.x, it.y, it.w, it.h);
+  if (img.rotation) {
+    /* ponytail: a rotated image still composites its whole plane at full
+       resolution.  The turn is applied to the finished composite, so a tile
+       would have to be cut in rotated space; worth doing if rotation ever
+       stops being the rare case. */
+    const base = compositeTile(img, chList, 1, 0, 0, pl.w, pl.h);
+    base.__k = compKey(img, chList, 1, 0, 0, pl.w, pl.h);
+    cx.drawImage(rotatedComposite(base, img.rotation), it.src.x / f, it.src.y / f,
+                 it.src.w / f, it.src.h / f, it.x, it.y, it.w, it.h);
+  } else {
+    // the coarsest pyramid level that still holds a sample per device pixel --
+    // render.py's own rule for the same decision, one panel at a time
+    const dw = Math.max(1, it.w * S.zoom * curDpr), dh = Math.max(1, it.h * S.zoom * curDpr);
+    const sw = it.src.w / f, sh = it.src.h / f;
+    let k = 1;
+    while (k < 16 && sw >= dw * k * 2 && sh >= dh * k * 2) k <<= 1;
+    const lvl = planeLevel(img.id, chList[0].index, k);
+    const rx = lvl.w / pl.w, ry = lvl.h / pl.h;   // exact even when a level is odd-sized
+    const sx = it.src.x / f * rx, sy = it.src.y / f * ry;
+    const swk = sw * rx, shk = sh * ry;
+    const x0 = Math.floor(sx / TILE_GRID) * TILE_GRID, y0 = Math.floor(sy / TILE_GRID) * TILE_GRID;
+    const tw = clamp(Math.ceil((sx + swk) / TILE_GRID) * TILE_GRID - x0, 1, 4096);
+    const th = clamp(Math.ceil((sy + shk) / TILE_GRID) * TILE_GRID - y0, 1, 4096);
+    const tile = compositeTile(img, chList, k, x0, y0, tw, th);
+    cx.drawImage(tile, sx - x0, sy - y0, swk, shk, it.x, it.y, it.w, it.h);
+  }
   cx.restore();
 }
 
@@ -1307,7 +1389,7 @@ async function doOpen(paths, replace) {
     const r = await jpost('/api/open', {
       paths, t: S.src.t, z_mode: S.src.zMode, z_index: S.src.zIndex, scene: S.src.scene,
     });
-    if (replace) { S.images = []; planes.clear(); invalidateComposites(); }
+    if (replace) { S.images = []; clearPlanes(); invalidateComposites(); }
     const fresh = !S.channels.length;
     (r.images || []).forEach(meta => {
       if (S.images.some(i => i.meta.path === meta.path && i.meta.id === meta.id)) return;
@@ -1779,7 +1861,7 @@ async function applySession(d) {
   const paths = (d.images || []).map(im => im.path);
   if (d.src) Object.assign(S.src, d.src);   // doOpen reads S.src for t/z/scene
   S.channels = []; S.activeId = null;
-  planes.clear(); invalidateComposites(); rotCache.clear();
+  clearPlanes(); invalidateComposites(); rotCache.clear();
   await doOpen(paths, true);
 
   const byPath = new Map((d.images || []).map(im => [im.path, im]));
@@ -2007,7 +2089,7 @@ function initUI() {
   };
   $('btn-clear').onclick = () => {
     if (!confirm('Remove all images from the figure?')) return;
-    S.images = []; S.activeId = null; planes.clear(); invalidateComposites();
+    S.images = []; S.activeId = null; clearPlanes(); invalidateComposites();
     renderImageList(); renderChannelCards(); refresh(true);
   };
 
@@ -2017,7 +2099,7 @@ function initUI() {
   $('preview-quality')._sync = () => { $('preview-quality').value = S.src.previewMax; };
   $('preview-quality').onchange = async () => {
     S.src.previewMax = +$('preview-quality').value;
-    planes.clear(); invalidateComposites(); rotCache.clear();
+    clearPlanes(); invalidateComposites(); rotCache.clear();
     busy(true, 'reloading previews…');
     try { await Promise.all(S.images.map(im => ensurePlanes(im))); } finally { busy(false); }
     refresh(true);
@@ -2025,7 +2107,7 @@ function initUI() {
   $('btn-reload').onclick = async () => {
     const paths = S.images.map(i => i.meta.path);
     const labels = new Map(S.images.map(i => [i.meta.path, i.label]));
-    planes.clear(); invalidateComposites(); rotCache.clear();
+    clearPlanes(); invalidateComposites(); rotCache.clear();
     S.images = []; S.activeId = null;
     await doOpen(paths, true);
     S.images.forEach(im => { im.label = labels.get(im.meta.path) || im.label; });

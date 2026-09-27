@@ -2,17 +2,16 @@
 
     python3 selftest.py
 
-The first check is the one this codebase actually needs: the levels maths lives
-twice, in render.py and in static/app.js, and the whole WYSIWYG claim rests on
-the two agreeing.  Rather than restate it a third time, the browser's lutFor is
-sliced out of app.js and run under node, so a change to either side that drifts
-from the other fails here.
+The first checks are the ones this codebase actually needs: the levels maths and
+the compositor live twice, in render.py and in static/app.js, and the whole
+WYSIWYG claim rests on the two agreeing.  Rather than restate them a third time,
+the browser's own functions are sliced out of app.js and run under node, so a
+change to either side that drifts from the other fails here.
 """
 from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -29,27 +28,68 @@ LEVELS = [(0, 65535, 1.0, 1.0, "#00ff00"), (120, 4000, 1.0, 1.0, "#ff00ff"),
           (0, 4095, 0.45, 1.0, "#00ffff"), (300, 20000, 2.2, 1.7, "#ffff00"),
           (10, 11, 1.0, 1.0, "#ffffff")]
 RAW = [0, 1, 9, 10, 11, 119, 120, 121, 500, 4000, 4095, 20000, 32768, 65534, 65535]
+HAVE_NODE = shutil.which("node")
 
 
-def browser_lut(spec, raw):
-    """Run static/app.js's own lutFor under node and read back its bytes."""
+def run_js(names, driver, payload):
+    """Run static/app.js's own `names` under node against `payload`."""
     src = open(APP_JS, encoding="utf-8").read()
-    i = src.index("function lutFor(")
-    body = src[i:src.index("\n}\n", i) + 2]
-    js = ("const lutCache = new Map();\n" + body +
-          "\nconst l = lutFor(JSON.parse(process.argv[2]));"
-          "\nconsole.log(JSON.stringify(JSON.parse(process.argv[3])"
-          ".map(v => [l.R[v], l.G[v], l.B[v], l.P[v]])));")
+    parts = ["const lutCache = new Map();"]
+    for name in names:
+        i = src.index(f"function {name}(")
+        parts.append(src[i:src.index("\n}\n", i) + 2])
+    parts.append(driver)
     with tempfile.TemporaryDirectory() as d:
-        f = os.path.join(d, "lut.js")
-        open(f, "w", encoding="utf-8").write(js)
-        out = subprocess.run([shutil.which("node"), f, json.dumps(spec), json.dumps(raw)],
-                             capture_output=True, text=True, check=True)
+        f = os.path.join(d, "slice.js")
+        open(f, "w", encoding="utf-8").write("\n".join(parts))
+        out = subprocess.run([HAVE_NODE, f, json.dumps(payload)],
+                             capture_output=True, text=True)
+    if out.returncode:
+        raise AssertionError(out.stderr.strip()[-800:])
     return json.loads(out.stdout)
 
 
+LUT_DRIVER = """
+const inp = JSON.parse(process.argv[2]);
+const l = lutFor(inp.channel);
+console.log(JSON.stringify(inp.raw.map(v => [l.R[v], l.G[v], l.B[v], l.P[v]])));
+"""
+
+TILE_DRIVER = """
+const inp = JSON.parse(process.argv[2]);
+const lvls = inp.planes.map(pd => {
+  let l = { data: Uint16Array.from(pd), w: inp.w, h: inp.h };
+  for (let k = 1; k < inp.k; k <<= 1) l = reduceHalf(l.data, l.w, l.h);
+  return l;
+});
+const ds = lvls.map(l => tileFrom(l, inp.x0, inp.y0, inp.tw, inp.th));
+const ls = inp.channels.map(lutFor);
+const rgba = new Uint8ClampedArray(inp.tw * inp.th * 4);
+compositePixels(ds, ls, inp.tw * inp.th, inp.blend, inp.invert, rgba);
+console.log(JSON.stringify({ lw: lvls[0].w, lh: lvls[0].h,
+                             level: Array.from(lvls[0].data),
+                             tile: Array.from(ds[0]), rgba: Array.from(rgba) }));
+"""
+
+
+def browser_lut(spec, raw):
+    return run_js(["lutFor"], LUT_DRIVER, {"channel": spec, "raw": raw})
+
+
+def half(a):
+    """What reduceHalf does: a rounded 2x2 box average, odd last row/column
+    dropped -- the same trim the server's own downsampling uses."""
+    h, w = a.shape
+    nh, nw = max(1, h // 2), max(1, w // 2)
+    r0, c0 = np.arange(nh) * 2, np.arange(nw) * 2
+    dy, dx = (1 if h > 1 else 0), (1 if w > 1 else 0)
+    s = (a[np.ix_(r0, c0)].astype(np.int64) + a[np.ix_(r0, c0 + dx)] +
+         a[np.ix_(r0 + dy, c0)] + a[np.ix_(r0 + dy, c0 + dx)] + 2) >> 2
+    return s.astype(np.uint16)
+
+
 def check_levels_match():
-    if not shutil.which("node"):
+    if not HAVE_NODE:
         print("  levels: SKIPPED (no node) -- the browser half cannot be run here")
         return
     for black, white, gamma, gain, color in LEVELS:
@@ -66,10 +106,65 @@ def check_levels_match():
           f"({len(LEVELS)} settings x {len(RAW)} raw values)")
 
 
+def check_tiles_match():
+    """The preview composites a reduced tile of the plane rather than the whole
+    thing at full resolution.  Reduce, crop and composite must each land where
+    render.py lands, or a panel looks different from the file it exports to."""
+    if not HAVE_NODE:
+        print("  tiles: SKIPPED (no node)")
+        return
+    rng = np.random.default_rng(3)
+    src = rng.integers(0, 4096, size=(37, 41), dtype=np.uint16)     # odd on purpose
+    src[5:9, 5:9] = 4095
+    specs = [dict(color="#00ff00", black=40, white=3000, gamma=1.0, gain=1.0),
+             dict(color="#ff00ff", black=0, white=4095, gamma=1.8, gain=1.2)]
+    cases = [(1, 0, 0, 41, 37, "add", False, 1), (2, 0, 0, 20, 18, "add", False, 1),
+             (4, 0, 0, 10, 9, "max", False, 2), (2, -6, -4, 32, 32, "add", False, 2),
+             (2, 8, 8, 32, 32, "screen", True, 2), (8, 0, 0, 8, 8, "add", True, 1)]
+    for k, x0, y0, tw, th, blend, invert, nch in cases:
+        planes = [src, (src // 3 + 200).astype(np.uint16)][:nch]
+        got = run_js(["lutFor", "reduceHalf", "tileFrom", "compositePixels"], TILE_DRIVER,
+                     {"planes": [p.ravel().tolist() for p in planes],
+                      "w": int(src.shape[1]), "h": int(src.shape[0]), "k": k,
+                      "x0": x0, "y0": y0, "tw": tw, "th": th,
+                      "blend": blend, "invert": invert,
+                      "channels": specs[:nch]})
+
+        lvls = []
+        for p in planes:
+            a = p
+            j = 1
+            while j < k:
+                a = half(a)
+                j <<= 1
+            lvls.append(a)
+        assert (lvls[0].shape[1], lvls[0].shape[0]) == (got["lw"], got["lh"]), \
+            f"level {k} size {got['lw']}x{got['lh']} vs {lvls[0].shape[::-1]}"
+        assert np.array_equal(lvls[0].ravel(), np.array(got["level"], dtype=np.uint16)), \
+            f"reduceHalf differs from a rounded box average at level {k}"
+
+        # the crop, zero-padded exactly the way _crop_stack pads it
+        stack = np.stack(lvls)
+        cut = R._crop_stack(stack, x0, y0, tw, th)
+        assert cut.shape == (nch, th, tw), (cut.shape, (nch, th, tw))
+        assert np.array_equal(cut[0].ravel(), np.array(got["tile"], dtype=np.uint16)), \
+            "tileFrom pads differently from render.py's _crop_stack"
+
+        want = R.composite(cut, [dict(index=i, **s) for i, s in enumerate(specs[:nch])],
+                           blend, invert)
+        rgba = np.array(got["rgba"], dtype=np.int16).reshape(th, tw, 4)
+        assert (rgba[:, :, 3] == 255).all(), "tile must be opaque"
+        d = np.abs(rgba[:, :, :3].astype(int) - want.astype(int))
+        tol = 0 if nch == 1 else 1     # a merge sums rounded bytes here, floats there
+        assert d.max() <= tol, \
+            f"tile k={k} {blend} invert={invert} {nch}ch differs by {d.max()} (tol {tol})"
+    print(f"  tiles: reduce, crop and composite match render.py over {len(cases)} cases")
+
+
 def check_merge_within_one():
     """Merges sum bytes on the client and floats on the server, so they are close
     but not identical -- one level, and no more, is the documented tolerance."""
-    if not shutil.which("node"):
+    if not HAVE_NODE:
         return
     specs = [dict(color="#00ff00", black=0, white=4095, gamma=1.0, gain=1.0),
              dict(color="#ff00ff", black=200, white=3000, gamma=1.6, gain=1.0)]
@@ -129,6 +224,7 @@ def check_plane_clamp():
 if __name__ == "__main__":
     print("MicroFigure self-check")
     check_levels_match()
+    check_tiles_match()
     check_merge_within_one()
     check_flatten_background()
     check_svg_background()
