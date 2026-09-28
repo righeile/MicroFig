@@ -71,6 +71,11 @@ console.log(JSON.stringify({ lw: lvls[0].w, lh: lvls[0].h,
                              tile: Array.from(ds[0]), rgba: Array.from(rgba) }));
 """
 
+BOUNDS_DRIVER = """
+const i = JSON.parse(process.argv[2]);
+console.log(JSON.stringify(rotatedBounds(i.deg, i.ox, i.oy, i.sx, i.sy, i.w, i.h)));
+"""
+
 
 def browser_lut(spec, raw):
     return run_js(["lutFor"], LUT_DRIVER, {"channel": spec, "raw": raw})
@@ -161,6 +166,42 @@ def check_tiles_match():
     print(f"  tiles: reduce, crop and composite match render.py over {len(cases)} cases")
 
 
+def check_rotation_frame():
+    """A rotated panel's coordinates are cut out of the stack the *server* turned,
+    so the browser has to turn them back the same way round and about the same
+    centre.  Turning the wrong way looks plausible and puts the panel somewhere
+    else entirely, which is why this is pinned to scipy rather than restated."""
+    if not HAVE_NODE:
+        print("  rotation: SKIPPED (no node)")
+        return
+    import imgio
+    n = 41
+    py, px = 14.0, 11.0
+    ys, xs = np.mgrid[0:n, 0:n]
+    for deg in (23.0, -23.0, 90.0, 7.5, 180.0):
+        a = np.zeros((1, n, n), np.uint16)
+        a[0, int(py), int(px)] = 20000
+        rot = imgio._rotate_stack(a, deg)[0].astype(np.float64)
+        # bilinear resampling spreads the mark over four pixels but keeps its
+        # centre of mass, so this is where the server put it
+        tot = rot.sum()
+        assert tot > 0, f"the mark rotated out of the frame at {deg} deg"
+        qy, qx = (rot * ys).sum() / tot, (rot * xs).sum() / tot
+        x0, y0, x1, y1 = run_js(["rotatedBounds"], BOUNDS_DRIVER,
+                                {"deg": deg, "ox": (n - 1) / 2, "oy": (n - 1) / 2,
+                                 "sx": qx, "sy": qy, "w": 0, "h": 0})
+        assert abs(x0 - px) < 0.05 and abs(y0 - py) < 0.05, (
+            f"{deg} deg: the server put ({px}, {py}) at ({qx:.2f}, {qy:.2f}); the browser "
+            f"reads that back as ({x0:.2f}, {y0:.2f})")
+        assert x1 == x0 and y1 == y0, "a zero-sized rect should not grow a bounding box"
+    # and a real rectangle has to contain its own turned corners
+    x0, y0, x1, y1 = run_js(["rotatedBounds"], BOUNDS_DRIVER,
+                            {"deg": 30.0, "ox": 20.0, "oy": 20.0,
+                             "sx": 4.0, "sy": 6.0, "w": 10.0, "h": 8.0})
+    assert x1 - x0 > 10 and y1 - y0 > 8, "the box must cover the turned rectangle"
+    print("  rotation: the browser turns a panel back the way scipy turned it")
+
+
 def check_merge_within_one():
     """Merges sum bytes on the client and floats on the server, so they are close
     but not identical -- one level, and no more, is the documented tolerance."""
@@ -225,6 +266,7 @@ if __name__ == "__main__":
     print("MicroFigure self-check")
     check_levels_match()
     check_tiles_match()
+    check_rotation_frame()
     check_merge_within_one()
     check_flatten_background()
     check_svg_background()

@@ -295,10 +295,13 @@ figure at fit zoom composites 0.8 M pixels instead of 3.1 M, and redraws in 10 m
 instead of 59. Averaging the raw plane before applying levels is also what the server
 does before it composites, so this moves the preview towards the export rather than
 away from it: an off-edge cut-out now shows the same black margin on screen that comes
-out in the file.
+out in the file. A rotated image works the same way — the panel's rectangle is turned
+back into the plane's own frame, and only that much is composited — so the corners a
+turn exposes are the colour the export gives them rather than the figure background
+showing through.
 
 Finished tiles are cached under a key that carries the colour, levels, blend, invert,
-resolution and rectangle, which is why turning a channel off and on again is free, and
+resolution, rectangle and angle, which is why turning a channel off and on again is free, and
 why panning slides through a tile instead of rebuilding one. Only a change of the plane
 data itself — a reload, or a different preview resolution — throws that away.
 Single-channel panels are byte-identical to the export; an additive merge sums

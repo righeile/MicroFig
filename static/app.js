@@ -270,16 +270,85 @@ function compositeTile(img, chList, k, x0, y0, tw, th) {
   compositePixels(ds, ls, tw * th, S.blend, S.invert, id.data);
   ctx.putImageData(id, 0, 0);
 
-  const px = tw * th;
+  return cacheTile(key, tile);
+}
+
+function cacheTile(key, canvas) {
+  const px = canvas.width * canvas.height;
   compCachePixels += px;
-  compCache.set(key, { canvas: tile, px });
+  compCache.set(key, { canvas, px });
   while ((compCachePixels > COMP_CACHE_MAX_PX || compCache.size > COMP_CACHE_MAX_N) &&
          compCache.size > 1) {
     const oldest = compCache.keys().next().value;
     compCachePixels -= compCache.get(oldest).px;
     compCache.delete(oldest);
   }
-  return tile;
+  return canvas;
+}
+
+/* A rotated panel shows a rectangle of the *turned* plane, so the pixels it
+   needs are that rectangle's four corners turned back into the plane's own
+   frame.  Compositing their bounding box and turning that is the same picture
+   as turning the whole plane and cutting the rectangle out, for a fraction of
+   the pixels once the panel is a cut-out or a zoom.
+
+   The box is clipped to the plane, and the corners the turn exposes are filled
+   with the colour a raw zero comes out as -- which is what the server paints
+   there too, since it rotates the raw planes with cval=0 and composites
+   afterwards.  Those corners used to be left transparent and show the figure
+   background instead. */
+function rotatedTile(img, chList, k, pl, deg, sx, sy, w, h) {
+  const ow = Math.max(1, Math.ceil(w)), oh = Math.max(1, Math.ceil(h));
+  const key = compKey(img, chList, k, sx, sy, ow, oh) + `|r${deg}`;
+  const hit = compCache.get(key);
+  if (hit) return hit.canvas;
+
+  const lvl = planeLevel(img.id, chList[0].index, k);
+  // scipy turns the plane about the centre of its pixel grid, at (n - 1) / 2, and
+  // it is the server's turn that the panel's coordinates were cut out of
+  const ox = (pl.w - 1) / 2 * (lvl.w / pl.w), oy = (pl.h - 1) / 2 * (lvl.h / pl.h);
+  const [x0, y0, x1, y1] = rotatedBounds(deg, ox, oy, sx, sy, ow, oh);
+  const a = deg * Math.PI / 180;
+  // a pixel of margin so the interpolation along the edge has a neighbour to read
+  const tx = clamp(Math.floor((x0 - 1) / TILE_GRID) * TILE_GRID, 0, lvl.w);
+  const ty = clamp(Math.floor((y0 - 1) / TILE_GRID) * TILE_GRID, 0, lvl.h);
+  const tw = clamp(Math.ceil((x1 + 1) / TILE_GRID) * TILE_GRID - tx, 0, lvl.w - tx);
+  const th = clamp(Math.ceil((y1 + 1) / TILE_GRID) * TILE_GRID - ty, 0, lvl.h - ty);
+
+  const out = document.createElement('canvas');
+  out.width = ow; out.height = oh;
+  const c = out.getContext('2d');
+  c.fillStyle = zeroColor(chList);
+  c.fillRect(0, 0, ow, oh);
+  if (tw > 0 && th > 0) {
+    c.translate(-sx, -sy);
+    c.translate(ox, oy); c.rotate(-a); c.translate(-ox, -oy);
+    c.drawImage(compositeTile(img, chList, k, tx, ty, tw, th), tx, ty);
+  }
+  return cacheTile(key, out);
+}
+
+/* Where a rectangle of the turned plane comes from in the plane's own frame:
+   the bounding box of its four corners, turned back.  Kept to plain arithmetic
+   so selftest.py can check which way round it turns against the server's. */
+function rotatedBounds(deg, ox, oy, sx, sy, w, h) {
+  const a = deg * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [qx, qy] of [[sx, sy], [sx + w, sy], [sx, sy + h], [sx + w, sy + h]]) {
+    const dx = qx - ox, dy = qy - oy;
+    const px = ox + dx * ca - dy * sa, py = oy + dx * sa + dy * ca;
+    if (px < x0) x0 = px; if (px > x1) x1 = px;
+    if (py < y0) y0 = py; if (py > y1) y1 = py;
+  }
+  return [x0, y0, x1, y1];
+}
+
+/* What a raw zero looks like once the levels, the blend and invert are through
+   with it -- one pixel of the real compositor rather than a second guess. */
+function zeroColor(chList) {
+  const one = new Uint16Array(1), rgba = new Uint8ClampedArray(4);
+  compositePixels(chList.map(() => one), chList.map(lutFor), 1, S.blend, S.invert, rgba);
+  return `rgb(${rgba[0]},${rgba[1]},${rgba[2]})`;
 }
 
 /* Only for a change of the plane data itself (a reload, a different preview
@@ -838,25 +907,6 @@ let textBoxes = [];       // on-canvas footprint of every label, refilled each d
 
 let curDpr = 1;                  // device pixel ratio of the last draw
 
-const rotCache = new Map();
-function rotatedComposite(base, angle) {
-  if (!angle) return base;
-  const key = `${base.width}x${base.height}|${angle}|${base.__k || ''}`;
-  const hit = rotCache.get(key);
-  if (hit && hit.src === base) return hit.canvas;
-  const out = document.createElement('canvas');
-  out.width = base.width; out.height = base.height;
-  const c = out.getContext('2d');
-  c.save();
-  c.translate(base.width / 2, base.height / 2);
-  c.rotate(-angle * Math.PI / 180);
-  c.drawImage(base, -base.width / 2, -base.height / 2);
-  c.restore();
-  if (rotCache.size > 12) rotCache.clear();
-  rotCache.set(key, { canvas: out, src: base });
-  return out;
-}
-
 function drawPreview() {
   const plan = buildPlan();
   lastPlan = plan;
@@ -950,33 +1000,28 @@ function drawPanelItem(it) {
     return;
   }
   const f = pl.factor;
+  // the coarsest pyramid level that still holds a sample per device pixel --
+  // render.py's own rule for the same decision, one panel at a time
+  const dw = Math.max(1, it.w * S.zoom * curDpr), dh = Math.max(1, it.h * S.zoom * curDpr);
+  const sw = it.src.w / f, sh = it.src.h / f;
+  let k = 1;
+  while (k < 16 && sw >= dw * k * 2 && sh >= dh * k * 2) k <<= 1;
+  const lvl = planeLevel(img.id, chList[0].index, k);
+  const rx = lvl.w / pl.w, ry = lvl.h / pl.h;     // exact even when a level is odd-sized
+  const sx = it.src.x / f * rx, sy = it.src.y / f * ry;
+  const swk = sw * rx, shk = sh * ry;
+
   cx.save();
   cx.beginPath(); cx.rect(it.x, it.y, it.w, it.h); cx.clip();
   if (img.rotation) {
-    /* ponytail: a rotated image still composites its whole plane at full
-       resolution.  The turn is applied to the finished composite, so a tile
-       would have to be cut in rotated space; worth doing if rotation ever
-       stops being the rare case. */
-    const base = compositeTile(img, chList, 1, 0, 0, pl.w, pl.h);
-    base.__k = compKey(img, chList, 1, 0, 0, pl.w, pl.h);
-    cx.drawImage(rotatedComposite(base, img.rotation), it.src.x / f, it.src.y / f,
-                 it.src.w / f, it.src.h / f, it.x, it.y, it.w, it.h);
+    cx.drawImage(rotatedTile(img, chList, k, pl, img.rotation, sx, sy, swk, shk),
+                 0, 0, swk, shk, it.x, it.y, it.w, it.h);
   } else {
-    // the coarsest pyramid level that still holds a sample per device pixel --
-    // render.py's own rule for the same decision, one panel at a time
-    const dw = Math.max(1, it.w * S.zoom * curDpr), dh = Math.max(1, it.h * S.zoom * curDpr);
-    const sw = it.src.w / f, sh = it.src.h / f;
-    let k = 1;
-    while (k < 16 && sw >= dw * k * 2 && sh >= dh * k * 2) k <<= 1;
-    const lvl = planeLevel(img.id, chList[0].index, k);
-    const rx = lvl.w / pl.w, ry = lvl.h / pl.h;   // exact even when a level is odd-sized
-    const sx = it.src.x / f * rx, sy = it.src.y / f * ry;
-    const swk = sw * rx, shk = sh * ry;
     const x0 = Math.floor(sx / TILE_GRID) * TILE_GRID, y0 = Math.floor(sy / TILE_GRID) * TILE_GRID;
     const tw = clamp(Math.ceil((sx + swk) / TILE_GRID) * TILE_GRID - x0, 1, 4096);
     const th = clamp(Math.ceil((sy + shk) / TILE_GRID) * TILE_GRID - y0, 1, 4096);
-    const tile = compositeTile(img, chList, k, x0, y0, tw, th);
-    cx.drawImage(tile, sx - x0, sy - y0, swk, shk, it.x, it.y, it.w, it.h);
+    cx.drawImage(compositeTile(img, chList, k, x0, y0, tw, th),
+                 sx - x0, sy - y0, swk, shk, it.x, it.y, it.w, it.h);
   }
   cx.restore();
 }
@@ -1489,7 +1534,7 @@ function applySnapshot(snap) {
     .filter(r => r.meta);
   histCurrent = snap;
   selText = null;
-  invalidateComposites(); rotCache.clear();
+  invalidateComposites();
   syncAll(); setActive(S.activeId); drawPreview();
   // an image that came back from the dead needs its preview planes again
   S.images.forEach(img => {
@@ -1861,7 +1906,7 @@ async function applySession(d) {
   const paths = (d.images || []).map(im => im.path);
   if (d.src) Object.assign(S.src, d.src);   // doOpen reads S.src for t/z/scene
   S.channels = []; S.activeId = null;
-  clearPlanes(); invalidateComposites(); rotCache.clear();
+  clearPlanes(); invalidateComposites();
   await doOpen(paths, true);
 
   const byPath = new Map((d.images || []).map(im => [im.path, im]));
@@ -1889,7 +1934,6 @@ async function applySession(d) {
   const found = d.activePath && S.images.find(i => i.meta.path === d.activePath);
   S.activeId = found ? found.id : (S.images[0] ? S.images[0].id : null);
 
-  rotCache.clear();
   renderImageList(); syncAll(); renderChannelCards(); setActive(S.activeId);
   refresh(true); fitZoom();
 }
@@ -2024,7 +2068,7 @@ function initUI() {
   });
   $('rotation').oninput = () => {
     const img = activeImage(); if (!img) return;
-    img.rotation = +$('rotation').value; rotCache.clear(); refresh();
+    img.rotation = +$('rotation').value; refresh();
   };
   $('btn-crop-reset').onclick = () => {
     const img = activeImage(); if (!img) return;
@@ -2047,7 +2091,7 @@ function initUI() {
         o.insets[k] = { x: mx - src.w / 2, y: my - src.h / 2, w: src.w, h: src.h };
       }
     });
-    rotCache.clear(); updateMagInfo(); refresh();
+    updateMagInfo(); refresh();
     status('crop, rotation and cut-out size copied to all images');
   };
 
@@ -2099,7 +2143,7 @@ function initUI() {
   $('preview-quality')._sync = () => { $('preview-quality').value = S.src.previewMax; };
   $('preview-quality').onchange = async () => {
     S.src.previewMax = +$('preview-quality').value;
-    clearPlanes(); invalidateComposites(); rotCache.clear();
+    clearPlanes(); invalidateComposites();
     busy(true, 'reloading previews…');
     try { await Promise.all(S.images.map(im => ensurePlanes(im))); } finally { busy(false); }
     refresh(true);
@@ -2107,7 +2151,7 @@ function initUI() {
   $('btn-reload').onclick = async () => {
     const paths = S.images.map(i => i.meta.path);
     const labels = new Map(S.images.map(i => [i.meta.path, i.label]));
-    clearPlanes(); invalidateComposites(); rotCache.clear();
+    clearPlanes(); invalidateComposites();
     S.images = []; S.activeId = null;
     await doOpen(paths, true);
     S.images.forEach(im => { im.label = labels.get(im.meta.path) || im.label; });
