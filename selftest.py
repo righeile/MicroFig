@@ -73,7 +73,7 @@ console.log(JSON.stringify({ lw: lvls[0].w, lh: lvls[0].h,
 
 BOUNDS_DRIVER = """
 const i = JSON.parse(process.argv[2]);
-console.log(JSON.stringify(rotatedBounds(i.deg, i.ox, i.oy, i.sx, i.sy, i.w, i.h)));
+console.log(JSON.stringify(rotatedBounds(i.deg, i.ox, i.oy, i.rx, i.ry, i.sx, i.sy, i.w, i.h)));
 """
 
 
@@ -166,6 +166,12 @@ def check_tiles_match():
     print(f"  tiles: reduce, crop and composite match render.py over {len(cases)} cases")
 
 
+def bounds(deg, ox, oy, rx, ry, sx, sy, w, h):
+    return run_js(["rotatedBounds"], BOUNDS_DRIVER,
+                  {"deg": deg, "ox": ox, "oy": oy, "rx": rx, "ry": ry,
+                   "sx": sx, "sy": sy, "w": w, "h": h})
+
+
 def check_rotation_frame():
     """A rotated panel's coordinates are cut out of the stack the *server* turned,
     so the browser has to turn them back the same way round and about the same
@@ -187,17 +193,25 @@ def check_rotation_frame():
         tot = rot.sum()
         assert tot > 0, f"the mark rotated out of the frame at {deg} deg"
         qy, qx = (rot * ys).sum() / tot, (rot * xs).sum() / tot
-        x0, y0, x1, y1 = run_js(["rotatedBounds"], BOUNDS_DRIVER,
-                                {"deg": deg, "ox": (n - 1) / 2, "oy": (n - 1) / 2,
-                                 "sx": qx, "sy": qy, "w": 0, "h": 0})
+        o = (n - 1) / 2
+        x0, y0, x1, y1 = bounds(deg, o, o, 1, 1, qx, qy, 0, 0)
         assert abs(x0 - px) < 0.05 and abs(y0 - py) < 0.05, (
             f"{deg} deg: the server put ({px}, {py}) at ({qx:.2f}, {qy:.2f}); the browser "
             f"reads that back as ({x0:.2f}, {y0:.2f})")
         assert x1 == x0 and y1 == y0, "a zero-sized rect should not grow a bounding box"
+
+        # A coarse level of a non-square plane does not halve both sides by the
+        # same fraction -- 600 x 450 becomes 150 x 112 -- and turning in that
+        # frame shears the picture.  The same physical point has to come back.
+        rx, ry = 150 / 600, 112 / 450
+        sx0, sy0, _, _ = bounds(deg, o * rx, o * ry, rx, ry, qx * rx, qy * ry, 0, 0)
+        assert abs(sx0 - x0 * rx) < 1e-9 and abs(sy0 - y0 * ry) < 1e-9, (
+            f"{deg} deg at rx={rx:.4f} ry={ry:.4f}: shrinking the plane and turning it "
+            f"gives ({sx0:.4f}, {sy0:.4f}), turning it and shrinking "
+            f"({x0 * rx:.4f}, {y0 * ry:.4f})")
+
     # and a real rectangle has to contain its own turned corners
-    x0, y0, x1, y1 = run_js(["rotatedBounds"], BOUNDS_DRIVER,
-                            {"deg": 30.0, "ox": 20.0, "oy": 20.0,
-                             "sx": 4.0, "sy": 6.0, "w": 10.0, "h": 8.0})
+    x0, y0, x1, y1 = bounds(30.0, 20.0, 20.0, 1, 1, 4.0, 6.0, 10.0, 8.0)
     assert x1 - x0 > 10 and y1 - y0 > 8, "the box must cover the turned rectangle"
     print("  rotation: the browser turns a panel back the way scipy turned it")
 

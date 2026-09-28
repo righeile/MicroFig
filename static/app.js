@@ -254,8 +254,8 @@ function compositePixels(ds, ls, n, blend, invert, out) {
 
 function compositeTile(img, chList, k, x0, y0, tw, th) {
   const key = compKey(img, chList, k, x0, y0, tw, th);
-  const hit = compCache.get(key);
-  if (hit) return hit.canvas;
+  const hit = takeTile(key);
+  if (hit) return hit;
 
   const ds = [], ls = [];
   for (const c of chList) {
@@ -273,15 +273,26 @@ function compositeTile(img, chList, k, x0, y0, tw, th) {
   return cacheTile(key, tile);
 }
 
+/* A hit moves back to the end of the Map, so the entry cacheTile drops is the
+   one nothing has asked for in longest.  Dropping the oldest instead throws
+   away a tile that is about to be drawn again the moment a figure needs more
+   tiles than the cache holds. */
+function takeTile(key) {
+  const hit = compCache.get(key);
+  if (!hit) return null;
+  compCache.delete(key); compCache.set(key, hit);
+  return hit.canvas;
+}
+
 function cacheTile(key, canvas) {
   const px = canvas.width * canvas.height;
   compCachePixels += px;
   compCache.set(key, { canvas, px });
   while ((compCachePixels > COMP_CACHE_MAX_PX || compCache.size > COMP_CACHE_MAX_N) &&
          compCache.size > 1) {
-    const oldest = compCache.keys().next().value;
-    compCachePixels -= compCache.get(oldest).px;
-    compCache.delete(oldest);
+    const cold = compCache.keys().next().value;
+    compCachePixels -= compCache.get(cold).px;
+    compCache.delete(cold);
   }
   return canvas;
 }
@@ -300,14 +311,15 @@ function cacheTile(key, canvas) {
 function rotatedTile(img, chList, k, pl, deg, sx, sy, w, h) {
   const ow = Math.max(1, Math.ceil(w)), oh = Math.max(1, Math.ceil(h));
   const key = compKey(img, chList, k, sx, sy, ow, oh) + `|r${deg}`;
-  const hit = compCache.get(key);
-  if (hit) return hit.canvas;
+  const hit = takeTile(key);
+  if (hit) return hit;
 
   const lvl = planeLevel(img.id, chList[0].index, k);
+  const rx = lvl.w / pl.w, ry = lvl.h / pl.h;
   // scipy turns the plane about the centre of its pixel grid, at (n - 1) / 2, and
   // it is the server's turn that the panel's coordinates were cut out of
-  const ox = (pl.w - 1) / 2 * (lvl.w / pl.w), oy = (pl.h - 1) / 2 * (lvl.h / pl.h);
-  const [x0, y0, x1, y1] = rotatedBounds(deg, ox, oy, sx, sy, ow, oh);
+  const ox = (pl.w - 1) / 2 * rx, oy = (pl.h - 1) / 2 * ry;
+  const [x0, y0, x1, y1] = rotatedBounds(deg, ox, oy, rx, ry, sx, sy, ow, oh);
   const a = deg * Math.PI / 180;
   // a pixel of margin so the interpolation along the edge has a neighbour to read
   const tx = clamp(Math.floor((x0 - 1) / TILE_GRID) * TILE_GRID, 0, lvl.w);
@@ -322,7 +334,9 @@ function rotatedTile(img, chList, k, pl, deg, sx, sy, w, h) {
   c.fillRect(0, 0, ow, oh);
   if (tw > 0 && th > 0) {
     c.translate(-sx, -sy);
-    c.translate(ox, oy); c.rotate(-a); c.translate(-ox, -oy);
+    c.translate(ox, oy); c.scale(rx, ry);           // rotatedBounds' map, forwards
+    c.rotate(-a);
+    c.scale(1 / rx, 1 / ry); c.translate(-ox, -oy);
     c.drawImage(compositeTile(img, chList, k, tx, ty, tw, th), tx, ty);
   }
   return cacheTile(key, out);
@@ -331,12 +345,14 @@ function rotatedTile(img, chList, k, pl, deg, sx, sy, w, h) {
 /* Where a rectangle of the turned plane comes from in the plane's own frame:
    the bounding box of its four corners, turned back.  Kept to plain arithmetic
    so selftest.py can check which way round it turns against the server's. */
-function rotatedBounds(deg, ox, oy, sx, sy, w, h) {
+function rotatedBounds(deg, ox, oy, rx, ry, sx, sy, w, h) {
   const a = deg * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const [qx, qy] of [[sx, sy], [sx + w, sy], [sx, sy + h], [sx + w, sy + h]]) {
-    const dx = qx - ox, dy = qy - oy;
-    const px = ox + dx * ca - dy * sa, py = oy + dx * sa + dy * ca;
+    // out to the plane's own frame, turn there, back again: halving 600 x 450
+    // twice gives 150 x 112, and turning in *that* frame shears the picture
+    const u = (qx - ox) / rx, v = (qy - oy) / ry;
+    const px = ox + (u * ca - v * sa) * rx, py = oy + (u * sa + v * ca) * ry;
     if (px < x0) x0 = px; if (px > x1) x1 = px;
     if (py < y0) y0 = py; if (py > y1) y1 = py;
   }
