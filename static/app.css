@@ -1,4 +1,4 @@
-/* MicroFigure -- only what is particular to this app.
+/* MicroFig -- only what is particular to this app.
  *
  * The palette, buttons, inputs, tabs, tables, modal, file dialog and plotting
  * panel come from labkit.css, which is loaded first.  What is left here is the
@@ -67,12 +67,12 @@ label.block, .panel label:not(.chk):not(.inline):not(.check) { display: block; f
   display: flex; align-items: center; gap: 8px; padding: 6px 10px;
   background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap;
 }
-/* auto margins rather than justify-content: a centred flex child that outgrows
+/* auto margins rather than justify-content: a centered flex child that outgrows
    its scroll box clips on the left, and pinch-zoom now goes to 800% */
 .canvas-wrap { flex: 1; min-height: 0; min-width: 0; overflow: auto; display: flex; padding: 20px; }
 #fig {
   /* no background of its own: the canvas paints the figure background itself,
-     white, a colour or the transparency checkerboard */
+     white, a color or the transparency checkerboard */
   box-shadow: 0 3px 22px rgba(0, 0, 0, .6);
   outline: 1px solid var(--line);
   image-rendering: auto; margin: 0 auto auto;

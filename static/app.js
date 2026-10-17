@@ -1,7 +1,7 @@
-/* MicroFigure -- client.
+/* MicroFig -- client.
    The layout engine here is the single source of truth: the preview draws it on a
    canvas, and export posts the very same resolved geometry to the server, which
-   re-renders it at full resolution.  Levels maths mirrors render.py exactly. */
+   re-renders it at full resolution.  Levels math mirrors render.py exactly. */
 'use strict';
 
 // ===================================================================== state
@@ -48,7 +48,7 @@ const NICE = [0.1,0.2,0.5,1,2,2.5,5,10,20,25,50,100,200,250,500,1000,2000,5000];
 
 /* Named palettes use the pure primaries/secondaries -- cyan is 00FFFF, not a
    tinted approximation.  Only Okabe-Ito is deliberately off-primary: it is a
-   published colour-blind-safe set whose whole point is its exact hexes. */
+   published color-blind-safe set whose whole point is its exact hexes. */
 const PALETTES = [
   { name: 'cyan/magenta/yellow/blue', colors: ['#00FFFF', '#FF00FF', '#FFFF00', '#0000FF'] },
   { name: 'green/magenta', colors: ['#00FF00', '#FF00FF', '#00FFFF', '#FFFF00'] },
@@ -56,7 +56,7 @@ const PALETTES = [
   { name: 'classic RGB', colors: ['#FF0000', '#00FF00', '#0000FF', '#FFFFFF'] },
   { name: 'cyan/yellow/magenta', colors: ['#00FFFF', '#FFFF00', '#FF00FF', '#FFFFFF'] },
   { name: 'Okabe-Ito', colors: ['#56B4E9', '#E69F00', '#009E73', '#CC79A7'] },
-  { name: 'all grey', colors: ['#FFFFFF', '#FFFFFF', '#FFFFFF', '#FFFFFF'] },
+  { name: 'all gray', colors: ['#FFFFFF', '#FFFFFF', '#FFFFFF', '#FFFFFF'] },
 ];
 
 function busy(on, text) {
@@ -304,7 +304,7 @@ function cacheTile(key, canvas) {
    the pixels once the panel is a cut-out or a zoom.
 
    The box is clipped to the plane, and the corners the turn exposes are filled
-   with the colour a raw zero comes out as -- which is what the server paints
+   with the color a raw zero comes out as -- which is what the server paints
    there too, since it rotates the raw planes with cval=0 and composites
    afterwards.  Those corners used to be left transparent and show the figure
    background instead. */
@@ -316,12 +316,12 @@ function rotatedTile(img, chList, k, pl, deg, sx, sy, w, h) {
 
   const lvl = planeLevel(img.id, chList[0].index, k);
   const rx = lvl.w / pl.w, ry = lvl.h / pl.h;
-  // scipy turns the plane about the centre of its pixel grid, at (n - 1) / 2, and
+  // scipy turns the plane about the center of its pixel grid, at (n - 1) / 2, and
   // it is the server's turn that the panel's coordinates were cut out of
   const ox = (pl.w - 1) / 2 * rx, oy = (pl.h - 1) / 2 * ry;
   const [x0, y0, x1, y1] = rotatedBounds(deg, ox, oy, rx, ry, sx, sy, ow, oh);
   const a = deg * Math.PI / 180;
-  // a pixel of margin so the interpolation along the edge has a neighbour to read
+  // a pixel of margin so the interpolation along the edge has a neighbor to read
   const tx = clamp(Math.floor((x0 - 1) / TILE_GRID) * TILE_GRID, 0, lvl.w);
   const ty = clamp(Math.floor((y0 - 1) / TILE_GRID) * TILE_GRID, 0, lvl.h);
   const tw = clamp(Math.ceil((x1 + 1) / TILE_GRID) * TILE_GRID - tx, 0, lvl.w - tx);
@@ -368,7 +368,7 @@ function zeroColor(chList) {
 }
 
 /* Only for a change of the plane data itself (a reload, a different preview
-   resolution, images closed).  Colour, levels, blend and invert are all part of
+   resolution, images closed).  Color, levels, blend and invert are all part of
    compKey, so clearing the cache for those just throws away cached panels that
    are about to be asked for again. */
 function invalidateComposites() { compCache.clear(); compCachePixels = 0; }
@@ -394,7 +394,7 @@ function insetRect(img, k) {
            y: crop.y + crop.h * 0.5 - sh / 2 + k * sh * 0.15, w: sw, h: sh };
 }
 
-/* Resize cut-outs to a given source-pixel box, each about its own centre so a
+/* Resize cut-outs to a given source-pixel box, each about its own center so a
    ROI the user has already aimed stays aimed.  With "link across images" on
    this is how one resize reaches the whole figure. */
 function applyInsetSize(w, h, opts) {
@@ -507,7 +507,7 @@ function computeLayout() {
   const colGap = gap * 3, rowGap = gap * 2;
   const aspect = (img, cell) => { const s = cellSource(img, cell); return s.w / s.h; };
   /* A panel never stretches what it shows.  The grid hands out a slot; the panel
-     takes its own source aspect inside it and sits centred, so a cut-out that is
+     takes its own source aspect inside it and sits centered, so a cut-out that is
      no longer square comes out as a rectangle rather than a squashed square. */
   const fit = (img, cell, x, y, slotW, slotH) => {
     const a = aspect(img, cell);
@@ -645,7 +645,7 @@ function panelChannels(img, cell) {
   } else {
     out = chansMerge(img, cell.source).map(c => chanSpec(img, c));
   }
-  // a lone channel can be drawn in grey instead of its own colour
+  // a lone channel can be drawn in gray instead of its own color
   if (out.length === 1 && monoApplies(cell)) {
     out = [Object.assign({}, out[0], { color: S.layout.monoColor })];
   }
@@ -877,13 +877,13 @@ function titleColorOf(cell) {
 /* Titles, row labels and the figure title sit on the canvas rather than on an
    image, so they have to contrast with it: white text on a white background is
    the one setting that makes a figure look empty.  Only pure black and pure
-   white are moved, so a colour actually picked in the colour well survives. */
+   white are moved, so a color actually picked in the color well survives. */
 const ON_BACKGROUND = [['titleColor', 'title-color'], ['rowColor', 'rowlabel-color'],
                        ['figTitleColor', 'fig-title-color']];
 function contrastLabelsWithBg() {
   const raw = String(S.layout.bg).replace('#', '');
   const h = raw.length === 3 ? raw.replace(/./g, ch => ch + ch) : raw;   // as render.py reads it
-  // an unparseable colour reads as NaN, falls through as light, and gets dark
+  // an unparseable color reads as NaN, falls through as light, and gets dark
   // labels -- the same way hex_to_rgb falls back to white on the server
   const luma = parseInt(h.slice(0, 2), 16) * 0.299 + parseInt(h.slice(2, 4), 16) * 0.587 +
                parseInt(h.slice(4, 6), 16) * 0.114;
@@ -1430,7 +1430,7 @@ function updateMagInfo() {
 
 // ---------------------------------------------------------------- open files
 /* The dialog is labkit's, so opening images here works exactly as it does in
-   the stitcher and the vesicle detector: folders on the left, the images
+   the stitcher and pHerret: folders on the left, the images
    actually in them on the right, select-all and shift for a run. */
 async function openBrowser(mode) {
   const paths = await LK.browse({
@@ -2101,7 +2101,7 @@ function initUI() {
       // only its size is forced to match, since the interesting spot differs per image
       for (let k = 0; k < Math.max(1, S.layout.insetCount); k++) {
         const src = insetRect(img, k), own = (o.insets || [])[k];
-        // a ROI the user already aimed keeps its centre; only its size is matched
+        // a ROI the user already aimed keeps its center; only its size is matched
         const mx = own ? own.x + own.w / 2 : src.x + src.w / 2;
         const my = own ? own.y + own.h / 2 : src.y + src.h / 2;
         o.insets[k] = { x: mx - src.w / 2, y: my - src.h / 2, w: src.w, h: src.h };
@@ -2227,7 +2227,7 @@ function initUI() {
     if (d.error) return;
     Object.keys(d).forEach(k => {
       if (k === 'channels') {
-        // keep channel count of the current image, adopt colours/levels where they line up
+        // keep channel count of the current image, adopt colors/levels where they line up
         d.channels.forEach((c, i) => { if (S.channels[i]) Object.assign(S.channels[i], c); });
       } else if (k === 'textOffsets') {
         S.textOffsets = d.textOffsets || {};   // replace: merging would keep stale placements

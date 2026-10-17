@@ -1,7 +1,7 @@
-# MicroFigure
+# MicroFig
 
 A local web app for turning raw microscopy files into publication-ready figures:
-pseudocolour, levels, scale-aware zoom cut-outs, scale bars, multi-panel layouts,
+pseudocolor, levels, scale-aware zoom cut-outs, scale bars, multi-panel layouts,
 and vector SVG export.
 
 The crop, the ROI and the levels are dragged rather than typed, and the scale comes
@@ -12,7 +12,7 @@ from the file's own metadata.
 Python 3.9 or newer, and the packages in `requirements.txt`:
 
 ```bash
-cd MicroFigure
+cd MicroFig
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt   # Windows: .venv\Scripts\python -m pip
 ```
@@ -22,10 +22,11 @@ Use `python -m pip` rather than `.venv/bin/pip` — moving the folder leaves the
 always finds its own. An existing conda or system environment works too, as long as
 it satisfies `requirements.txt`; the app imports nothing else.
 
-`aicsimageio` is what reads the microscope formats, and `aicspylibczi` is what it
-uses for CZI — both come from `requirements.txt`, but CZI support is the one that
-quietly stops working if `aicspylibczi` failed to build. `python3 -c "import
-aicspylibczi"` says whether it is there.
+`bioio` is what reads the microscope formats, one reader package per family —
+`bioio-czi`, `bioio-tifffile` (also LSM), `bioio-ome-tiff`, `bioio-nd2`,
+`bioio-lif`. All come from `requirements.txt`, but a reader that failed to build
+does not announce itself: the format simply reports as unsupported. `python3 -c
+"import bioio_czi"` says whether CZI is there.
 
 If the launcher runs the system Python rather than the venv, put the venv first on
 the path or start the app with `.venv/bin/python app.py`.
@@ -48,7 +49,7 @@ python3 selftest.py
 ```
 
 It checks the things that can silently render the wrong figure: that the levels
-maths in `static/app.js` still agrees with `render.py` (it runs the browser's own
+math in `static/app.js` still agrees with `render.py` (it runs the browser's own
 `lutFor` under `node`, so a change to either side that drifts from the other fails
 here), that a transparent canvas lands on the background you asked for rather than
 on black, and that every preview resolution returns a usable plane. No test data
@@ -56,16 +57,21 @@ needed. The levels check is skipped if `node` is not installed.
 
 ## Formats
 
-CZI, TIFF / OME-TIFF, LSM, ND2, LIF and ordinary PNG/JPG — anything `aicsimageio`
-can open. 16-bit data is kept at full depth all the way to export; only the
-on-screen preview is downsampled.
+CZI, TIFF / OME-TIFF, LSM, ND2, LIF and ordinary PNG/JPG — anything `bioio` has a
+reader package for. 16-bit data is kept at full depth all the way to export; only
+the on-screen preview is downsampled.
+
+`.oib`, `.oif`, `.zvi` and `.ims` are offered by the file browser but need
+`bioio-bioformats`, which needs a JVM, so they do not open. `.sld` is not
+supported: its reader is the one package in the bioio family still pinned to
+numpy 1.
 
 ## The workflow
 
 1. **Open images…** browses your drive directly (no upload), or drop files on the window.
    Multi-select with click / shift-click / *select all*. Every image you open becomes a
    row of one figure.
-2. **Channels** — colour, name, black/white point, gamma and gain per channel.
+2. **Channels** — color, name, black/white point, gamma and gain per channel.
    Drag directly on the histogram to set the black and white points. Each channel also
    carries two scope tick-boxes, **merge** and **cut-outs**, so a channel can appear in
    one and not the other. Transmitted-light channels (`T PMT`, `phase`, `DIC`, …) start
@@ -117,31 +123,31 @@ Double-click a panel to reset its crop to the full frame. `f` fits the figure to
 | <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd> | undo |
 | <kbd>⇧⌘Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> | redo |
 
-Undo covers everything that changes the figure — levels, colours, crops, ROIs, layout,
+Undo covers everything that changes the figure — levels, colors, crops, ROIs, layout,
 label placement, even *Clear all*, which comes back with its images and their settings
 intact. A slider drag lands as one step rather than one per pixel. Zoom and the guide
 overlay are view settings and are deliberately not recorded.
 
-## Channel scope and greyscale cut-outs
+## Channel scope and grayscale cut-outs
 
-The usual figure idiom is a coloured merge with greyscale single-channel zooms, and
+The usual figure idiom is a colored merge with grayscale single-channel zooms, and
 nuclei shown only in the overview. Two controls give you that:
 
 - **merge / cut-outs** tick-boxes on each channel card. Untick *cut-outs* on DAPI and it
   keeps contributing to every merge while producing no zoom panel of its own. In
   templates where channels are columns, the excluded channel leaves an empty slot rather
   than shifting the row, so columns stay aligned.
-- **Single-channel panels → draw lone channels in** (Channels tab): *their own colour*,
-  *grey — cut-outs only*, or *grey — everywhere*. Merges are never affected; only panels
-  showing exactly one channel. The grey is a colour picker, so off-white also works.
+- **Single-channel panels → draw lone channels in** (Channels tab): *their own color*,
+  *gray — cut-outs only*, or *gray — everywhere*. Merges are never affected; only panels
+  showing exactly one channel. The gray is a color picker, so off-white also works.
 
-### Colour presets
+### Color presets
 
-The swatch buttons assign colours **by channel position**, so check the order matches
+The swatch buttons assign colors **by channel position**, so check the order matches
 your file. The named palettes are the pure primaries and secondaries — cyan is
 `#00FFFF`, magenta `#FF00FF`, yellow `#FFFF00`, blue `#0000FF`, red `#FF0000`, green
 `#00FF00` — with nothing mixed in to brighten them; `Okabe-Ito` is the one exception, a
-published colour-blind-safe set whose whole point is its exact hexes. The colours guessed
+published color-blind-safe set whose whole point is its exact hexes. The colors guessed
 from channel names (DAPI → blue, 488 → green, 555 → magenta) are pure too. Pure blue is
 genuinely dark on a black background, which is the honest rendering of a blue channel; if
 you want the nuclei to read more strongly, pick cyan for that channel rather than a
@@ -171,18 +177,18 @@ correct — and different — bars (typically 20 µm and 5 µm). The **Scale** t
 the magnification factor between them.
 
 **Cut-outs are never stretched.** A panel takes the aspect ratio of the region it is
-showing and sits centred in whatever slot the grid gave it, so pulling a ROI out into a
+showing and sits centered in whatever slot the grid gave it, so pulling a ROI out into a
 2:1 rectangle produces a 2:1 panel rather than a squashed square. The same holds for the
 overview when its crop is not square, and for a figure whose images have differently
 shaped ROIs.
 
 **W / H (src px)** in the Layout tab resize the cut-outs that already exist, each about
-its own centre so a ROI you have already aimed stays aimed. **Link cut-out size across
+its own center so a ROI you have already aimed stays aimed. **Link cut-out size across
 all images** (on by default) means resizing one — by handle or by typing — resizes every
 cut-out in the figure to match, which is what you want when the panels are being
 compared. Untick it to size one image on its own.
 
-`Placement` chooses which panels are labelled. Overview panels and inset panels are
+`Placement` chooses which panels are labeled. Overview panels and inset panels are
 treated as separate groups, so *first panel of each row* puts one bar on the overview
 and one on the zoom.
 
@@ -212,7 +218,7 @@ a complete multi-panel figure. Beyond that:
 
 The intended flow is to get a single image looking right and then propagate it:
 
-1. Open one image, set channel colours, levels, scopes and the template.
+1. Open one image, set channel colors, levels, scopes and the template.
 2. Drag the crop and the cut-out ROI on that image until the cell reads well.
 3. **Apply to all** (Layout tab) copies the crop, the rotation and the cut-out *size* to
    every other image. A ROI you have already positioned keeps its position — only its
@@ -233,12 +239,12 @@ instead of repeating them across all of them.
 - **PNG / TIFF** at the same physical size and DPI, with the resolution tag set.
 - **PDF** for quick circulation.
 
-The canvas is white by default (*Layout ▸ Canvas*), and can be any colour or
+The canvas is white by default (*Layout ▸ Canvas*), and can be any color or
 **transparent**. Transparency survives into SVG and PNG; TIFF and PDF have no alpha,
 so those two are flattened onto white and say so here rather than quietly turning
 black. Titles, row labels and the figure title are the text that sits on the canvas
 rather than on an image, so changing the background flips them between black and
-white — unless you have picked a colour of your own, which is left alone.
+white — unless you have picked a color of your own, which is left alone.
 
 Figure width presets are the usual journal columns: 85, 114 and 180 mm.
 
@@ -252,7 +258,7 @@ path and shows the result, so you can confirm the preview and the file agree.
 ## Presets
 
 *Save* stores every setting except the images themselves into `presets/` as JSON.
-Loading one applies the whole look — colours, levels, layout, scale bars, fonts — to
+Loading one applies the whole look — colors, levels, layout, scale bars, fonts — to
 whatever images are open, which is how you keep a series of figures consistent.
 
 ## Sessions
@@ -271,7 +277,7 @@ reported missing and the rest of the session still loads.
 The browser resolves the layout into a flat list of drawing items and renders it on a
 canvas. Export posts that same resolved geometry to the server, which re-renders it at
 full resolution. The preview and the file are therefore the same figure, not two
-implementations of it. The levels maths is duplicated in `render.py` and `static/app.js`
+implementations of it. The levels math is duplicated in `render.py` and `static/app.js`
 and must stay in sync — it is the one place the two sides could drift.
 
 ```
@@ -297,10 +303,10 @@ does before it composites, so this moves the preview towards the export rather t
 away from it: an off-edge cut-out now shows the same black margin on screen that comes
 out in the file. A rotated image works the same way — the panel's rectangle is turned
 back into the plane's own frame, and only that much is composited — so the corners a
-turn exposes are the colour the export gives them rather than the figure background
+turn exposes are the color the export gives them rather than the figure background
 showing through.
 
-Finished tiles are cached under a key that carries the colour, levels, blend, invert,
+Finished tiles are cached under a key that carries the color, levels, blend, invert,
 resolution, rectangle and angle, which is why turning a channel off and on again is free, and
 why panning slides through a tile instead of rebuilding one. Only a change of the plane
 data itself — a reload, or a different preview resolution — throws that away.

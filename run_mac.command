@@ -1,5 +1,5 @@
 #!/bin/bash
-# Double-click to start MicroFigure. A copy still running on the port is
+# Double-click to start MicroFig. A copy still running on the port is
 # stopped first, so the page never talks to an older server behind the
 # current files.
 cd "$(dirname "$0")" || exit 1
@@ -28,4 +28,8 @@ for _ in $(seq 20); do
 done
 
 export PORT
-exec python3 "$SERVER"  # opens the browser itself
+# Prefer a project virtualenv if one exists, otherwise whatever python3 is on PATH.
+if [ -x ".venv/bin/python" ]; then PY=".venv/bin/python"
+elif [ -x "venv/bin/python" ]; then PY="venv/bin/python"
+else PY="python3"; fi
+exec "$PY" "$SERVER"  # opens the browser itself

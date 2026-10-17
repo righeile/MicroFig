@@ -1,7 +1,7 @@
-"""Image loading, metadata extraction and caching for MicroFigure.
+"""Image loading, metadata extraction and caching for MicroFig.
 
-Supports CZI, (OME-)TIFF, LSM, PNG/JPG and anything else aicsimageio can open.
-Everything is normalised to a (C, Y, X) uint16 array plus a metadata record.
+Supports CZI, (OME-)TIFF, LSM, ND2, LIF, PNG/JPG -- anything bioio can open.
+Everything is normalized to a (C, Y, X) uint16 array plus a metadata record.
 """
 from __future__ import annotations
 
@@ -14,15 +14,18 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 RASTER_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".gif"}
+# .oib/.oif/.zvi/.ims are listed but need bioio-bioformats, which needs a JVM;
+# they have never opened here.  .sld is gone with aicsimageio: its bioio reader,
+# bioio-sldy, is the one package in the family still pinned to numpy<2.
 SUPPORTED_EXT = {
     ".czi", ".tif", ".tiff", ".ome.tif", ".ome.tiff", ".lsm", ".nd2",
-    ".lif", ".oib", ".oif", ".zvi", ".ims", ".sld",
+    ".lif", ".oib", ".oif", ".zvi", ".ims",
 } | RASTER_EXT
 
-# Fallback colours cycled through when a file gives us no colour hints.
+# Fallback colors cycled through when a file gives us no color hints.
 DEFAULT_COLORS = ["#00FF00", "#FF00FF", "#00FFFF", "#FFFF00", "#FF0000", "#FFFFFF"]
 
-# Emission-wavelength -> display colour, used when the channel name carries a dye
+# Emission-wavelength -> display color, used when the channel name carries a dye
 # or laser line (very common in CZI channel names such as "Alexa 488").
 _DYE_HINTS: List[Tuple[Tuple[str, ...], str]] = [
     (("dapi", "hoechst", "405", "bfp", "cfp"), "#0000FF"),
@@ -234,7 +237,7 @@ def warm() -> None:
     startup rather than inside the first open is the difference between a figure
     that appears and one that appears after a stall."""
     try:
-        from aicsimageio import AICSImage  # noqa: F401
+        from bioio import BioImage  # noqa: F401
     except Exception:
         pass
 
@@ -264,15 +267,34 @@ def _read_raster(path: str):
     )
 
 
+def _real_scenes(img) -> List[int]:
+    """Indices of the scenes that are actually images.
+
+    Zeiss LSM stores a reduced RGB thumbnail next to every image, and bioio
+    offers it as a second scene -- pick it and you get a 128x128 preview where
+    your data should be.  The thumbnail is the scene carrying an S (samples)
+    axis.  A plain RGB file has S too, but then it is the only scene, so the
+    `or` below hands it back rather than leaving nothing to open.
+
+    Probing is free: set_scene costs 0.01 ms and reads no pixels.
+    """
+    keep = []
+    for i in range(len(img.scenes)):
+        img.set_scene(i)
+        if "S" not in str(img.dims.order):
+            keep.append(i)
+    img.set_scene(0)
+    return keep or list(range(len(img.scenes)))
+
+
 def _read_bioformat(path: str, t: int, z_mode: str, z_index: int, scene: int):
-    from aicsimageio import AICSImage
-    img = AICSImage(path)
+    from bioio import BioImage
+    img = BioImage(path)
     try:
-        scenes = list(img.scenes)
+        scenes = _real_scenes(img)
     except Exception:
-        scenes = ["0"]
-    if len(scenes) > 1:
-        img.set_scene(min(max(scene, 0), len(scenes) - 1))
+        scenes = [0]
+    img.set_scene(scenes[min(max(scene, 0), len(scenes) - 1)])
 
     dims = img.dims
     n_t = int(getattr(dims, "T", 1) or 1)
@@ -316,8 +338,20 @@ def _physical_pixel_size(img, path: str) -> Tuple[Optional[float], str]:
             return float(x), "metadata"
     except Exception:
         pass
+    ext = os.path.splitext(path)[1].lower()
+    # Zeiss keeps the LSM calibration in CZ_LSM_INFO, in metres, and no bioio
+    # reader looks there -- without this every LSM loads uncalibrated.
+    if ext == ".lsm":
+        try:
+            import tifffile
+            with tifffile.TiffFile(path) as tf:
+                vx = (tf.lsm_metadata or {}).get("VoxelSizeX")
+            if vx and float(vx) > 0:
+                return float(vx) * 1e6, "lsm-metadata"
+        except Exception:
+            pass
     # TIFFs written by ImageJ/Fiji keep the calibration in the resolution tags.
-    if os.path.splitext(path)[1].lower() in (".tif", ".tiff"):
+    if ext in (".tif", ".tiff"):
         try:
             import tifffile
             with tifffile.TiffFile(path) as tf:

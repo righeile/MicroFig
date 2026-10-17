@@ -1,8 +1,8 @@
-"""Self-check for the parts of MicroFigure that can silently render the wrong thing.
+"""Self-check for the parts of MicroFig that can silently render the wrong thing.
 
     python3 selftest.py
 
-The first checks are the ones this codebase actually needs: the levels maths and
+The first checks are the ones this codebase actually needs: the levels math and
 the compositor live twice, in render.py and in static/app.js, and the whole
 WYSIWYG claim rests on the two agreeing.  Rather than restate them a third time,
 the browser's own functions are sliced out of app.js and run under node, so a
@@ -175,7 +175,7 @@ def bounds(deg, ox, oy, rx, ry, sx, sy, w, h):
 def check_rotation_frame():
     """A rotated panel's coordinates are cut out of the stack the *server* turned,
     so the browser has to turn them back the same way round and about the same
-    centre.  Turning the wrong way looks plausible and puts the panel somewhere
+    center.  Turning the wrong way looks plausible and puts the panel somewhere
     else entirely, which is why this is pinned to scipy rather than restated."""
     if not HAVE_NODE:
         print("  rotation: SKIPPED (no node)")
@@ -189,7 +189,7 @@ def check_rotation_frame():
         a[0, int(py), int(px)] = 20000
         rot = imgio._rotate_stack(a, deg)[0].astype(np.float64)
         # bilinear resampling spreads the mark over four pixels but keeps its
-        # centre of mass, so this is where the server put it
+        # center of mass, so this is where the server put it
         tot = rot.sum()
         assert tot > 0, f"the mark rotated out of the frame at {deg} deg"
         qy, qx = (rot * ys).sum() / tot, (rot * xs).sum() / tot
@@ -276,8 +276,30 @@ def check_plane_clamp():
     print("  plane: every requested size returns a usable plane")
 
 
+def check_thumbnail_scene_hidden():
+    """Zeiss LSM keeps a reduced RGB thumbnail beside every image, and bioio
+    offers it as a second scene.  Pick it and the figure gets a 128x128 preview
+    instead of the data, so imgio drops the scenes carrying an S axis -- unless
+    that is all there is, as in a plain RGB file."""
+    import imgio
+
+    class Dims:
+        def __init__(self, order): self.order = order
+    class Fake:
+        def __init__(self, orders): self.scenes = [f"Image:{i}" for i in range(len(orders))]; self._o = orders; self.i = 0
+        def set_scene(self, i): self.i = i
+        @property
+        def dims(self): return Dims(self._o[self.i])
+
+    assert imgio._real_scenes(Fake(["TCZYX", "TCZYXS"])) == [0]        # LSM: image + thumbnail
+    assert imgio._real_scenes(Fake(["TCZYXS"])) == [0]                 # plain RGB: keep the only one
+    assert imgio._real_scenes(Fake(["TCZYX", "TCZYX"])) == [0, 1]      # two real scenes, both kept
+    assert imgio._real_scenes(Fake(["TCZYXS", "TCZYX"])) == [1]        # thumbnail need not be last
+    print("  scenes: the LSM thumbnail is hidden, real scenes are not")
+
+
 if __name__ == "__main__":
-    print("MicroFigure self-check")
+    print("MicroFig self-check")
     check_levels_match()
     check_tiles_match()
     check_rotation_frame()
@@ -285,4 +307,5 @@ if __name__ == "__main__":
     check_flatten_background()
     check_svg_background()
     check_plane_clamp()
+    check_thumbnail_scene_hidden()
     print("all checks passed")

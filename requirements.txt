@@ -1,8 +1,21 @@
+# Upper bounds are the majors that are known to break this code, not caution:
+# see ../requirements-apps.txt, which is the environment these apps actually
+# run in (one shared .venv, symlinked as .venv in each app).
+#
+# MicroFig joined that shared env on 2026-09-30, when aicsimageio was
+# replaced by bioio.  aicsimageio had been abandoned at 4.14.0 pinning
+# tifffile<2023.3.15 and lxml<5 (no cp313 wheel), which is what kept this app
+# on a venv of its own.
 flask>=3.0
 matplotlib>=3.7        # labkit's shared plotting style
-numpy>=1.24
-pillow>=10.0
-scipy>=1.10
-aicsimageio>=4.11
-aicspylibczi>=3.1      # CZI support
-tifffile>=2023.2
+numpy>=2.1,<3
+pillow>=10.0,<13       # 13 drops Image.fromarray(mode=), used by selftest.py
+scipy>=1.15,<2
+bioio>=3.5             # the maintained successor to aicsimageio, same API
+bioio-czi>=3.0         # .czi
+bioio-tifffile>=1.3    # .tif and .lsm
+bioio-ome-tiff>=1.4    # .ome.tif
+bioio-nd2>=2.5         # .nd2 -- aicsimageio never had this reader installed
+bioio-lif>=1.4         # .lif
+bioio-imageio>=1.3     # the raster fallback
+# Deliberately NOT bioio-sldy (.sld): the one reader still pinned to numpy<2.

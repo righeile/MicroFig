@@ -1,10 +1,10 @@
-"""Compositing and publication-quality export for MicroFigure.
+"""Compositing and publication-quality export for MicroFig.
 
 The browser computes the figure layout and posts a "render plan": a flat list of
 drawing items in figure units.  This module is a pure renderer for that plan, so
 what you see in the preview is exactly what lands in the SVG.
 
-Levels maths is intentionally duplicated in static/app.js -- keep the two in sync.
+Levels math is intentionally duplicated in static/app.js -- keep the two in sync.
 """
 from __future__ import annotations
 
@@ -223,7 +223,7 @@ def build_svg(plan: dict) -> str:
         f'version="1.1" width="{_fmt(phys_w_mm)}mm" height="{_fmt(phys_h_mm)}mm" '
         f'viewBox="0 0 {_fmt(width)} {_fmt(height)}">'
     )
-    parts.append(f'<desc>MicroFigure export - {dpi} dpi raster, vector annotation</desc>')
+    parts.append(f'<desc>MicroFig export - {dpi} dpi raster, vector annotation</desc>')
     if bg and bg.lower() not in ("none", "transparent"):
         parts.append(f'<rect x="0" y="0" width="{_fmt(width)}" height="{_fmt(height)}" fill="{sax.escape(bg)}"/>')
 

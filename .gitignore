@@ -1,6 +1,6 @@
 # Python environment and byte-code caches.  Built from requirements.txt, so they
 # are reproducible and by far the largest thing in the folder.
-.venv/
+.venv
 venv/
 env/
 __pycache__/

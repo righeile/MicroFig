@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MicroFigure</title>
+<title>MicroFig</title>
 <link rel="stylesheet" href="/static/labkit.css">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 
 <header class="topbar">
-  <div class="brand">Micro<span>Figure</span><small class="brand-by">by Matrix MetalloProteinase</small></div>
+  <div class="brand">Micro<span>Fig</span><small class="brand-by">by Matrix MetalloProteinase</small></div>
   <button id="btn-open" class="btn primary">Open images…</button>
   <button id="btn-add" class="btn">Add to figure…</button>
   <div class="spacer"></div>
@@ -158,14 +158,14 @@
       <div class="row">
         <label class="grow">Draw lone channels in
           <select id="mono-mode">
-            <option value="none">their own colour</option>
-            <option value="insets">grey — cut-outs only</option>
-            <option value="all">grey — everywhere</option>
+            <option value="none">their own color</option>
+            <option value="insets">gray — cut-outs only</option>
+            <option value="all">gray — everywhere</option>
           </select>
         </label>
-        <label class="narrow">grey <input type="color" id="mono-color" value="#ffffff"></label>
+        <label class="narrow">gray <input type="color" id="mono-color" value="#ffffff"></label>
       </div>
-      <div class="sec-title">Colour presets</div>
+      <div class="sec-title">Color presets</div>
       <div class="row wrap" id="palette-presets"></div>
     </section>
 
@@ -280,7 +280,7 @@
         <label>Margin <input type="number" id="sb-margin" value="10" min="0" step="1"></label>
       </div>
       <div class="row">
-        <label class="grow">Colour <input type="color" id="sb-color" value="#ffffff"></label>
+        <label class="grow">Color <input type="color" id="sb-color" value="#ffffff"></label>
         <label class="chk"><input type="checkbox" id="sb-label"> label</label>
       </div>
       <div class="row">
@@ -315,12 +315,12 @@
       </div>
       <div class="row">
         <label>Size <input type="number" id="title-size" value="12" min="4" step="1"></label>
-        <label class="grow">Colour <input type="color" id="title-color" value="#000000"></label>
+        <label class="grow">Color <input type="color" id="title-color" value="#000000"></label>
         <label class="chk"><input type="checkbox" id="title-bold"> bold</label>
       </div>
       <div class="row">
         <label class="chk grow"><input type="checkbox" id="title-color-by-channel" checked>
-          colour titles by channel</label>
+          color titles by channel</label>
       </div>
       <div class="row">
         <label class="chk grow"><input type="checkbox" id="title-first-only">
@@ -342,7 +342,7 @@
         <label class="chk"><input type="checkbox" id="rowlabel-rotate"> rotate</label>
       </div>
       <div class="row">
-        <label class="grow">Colour <input type="color" id="rowlabel-color" value="#000000"></label>
+        <label class="grow">Color <input type="color" id="rowlabel-color" value="#000000"></label>
         <label class="chk"><input type="checkbox" id="rowlabel-italic"> italic</label>
       </div>
       <div class="sec-title">Figure title</div>
@@ -351,7 +351,7 @@
       </div>
       <div class="row">
         <label>Size <input type="number" id="fig-title-size" value="14" min="4" step="1"></label>
-        <label class="grow">Colour <input type="color" id="fig-title-color" value="#000000"></label>
+        <label class="grow">Color <input type="color" id="fig-title-color" value="#000000"></label>
       </div>
       <div class="sec-title">Placing labels by hand</div>
       <div class="hint">Drag any label on the canvas to move it. Right-click turns it 90°

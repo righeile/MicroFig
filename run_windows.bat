@@ -1,6 +1,6 @@
 <# :
 @echo off
-REM Double-click to start MicroFigure. A copy still running on the port is
+REM Double-click to start MicroFig. A copy still running on the port is
 REM stopped first, so the page never talks to an older server behind the
 REM current files. Below this header the file is PowerShell, which can see what
 REM each process was started with.

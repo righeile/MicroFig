@@ -1,4 +1,4 @@
-"""MicroFigure -- a local web app for building publication figures from
+"""MicroFig -- a local web app for building publication figures from
 microscopy images (CZI / TIFF / OME-TIFF / LSM / ND2 / ...).
 
 Run:  python app.py     then open http://127.0.0.1:5678
@@ -311,12 +311,12 @@ def status():
 def main():
     # PORT first, then the app-specific name: same order as the other tools,
     # so one env var starts whichever of them you meant.
-    port = int(os.environ.get("PORT") or os.environ.get("MICROFIGURE_PORT") or 5678)
+    port = int(os.environ.get("PORT") or os.environ.get("MICROFIG_PORT") or 5678)
     url = f"http://127.0.0.1:{port}"
     Thread(target=warm_readers, daemon=True).start()
     if "--no-browser" not in sys.argv:
         Timer(1.2, lambda: webbrowser.open(url)).start()
-    print(f"\n  MicroFigure running at {url}\n  Ctrl-C to stop\n")
+    print(f"\n  MicroFig running at {url}\n  Ctrl-C to stop\n")
     app.run(host="127.0.0.1", port=port, debug="--debug" in sys.argv, threaded=True)
 
 
