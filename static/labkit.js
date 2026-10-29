@@ -14,6 +14,7 @@
  *   LK.swapWells(labels, a, b)        move a well's contents, or swap two
  *   LK.api(url, opts)                 fetch that throws the server's message
  *   LK.nameMatch(query)              a filter box, as a predicate over a name
+ *   LK.board(exportButton, makeSvg)   Send to board, in the figure editor's tab
  */
 (function (global) {
   'use strict';
@@ -1913,6 +1914,38 @@
       button.style.marginLeft = 'auto';
     }
     bar.appendChild(button);
+  };
+
+  /**
+   * Send to board: an app open in a tab of the figure editor (omnifig) hands
+   * the editor's board its figure, which lands there as live vector.  The
+   * button goes after `exportButton`, the app's Export SVG, looking like it
+   * without its emphasis.  `makeSvg` returns the SVG text as that export
+   * writes it, or a promise of it; nothing returned, nothing sent.  Open on
+   * its own an app has no board, so no button.
+   *
+   * The message is {type: 'board', v: 1, svg}, posted to the framing page's
+   * origin only; the board knows which app sent it by its frame.  The rest
+   * of joining the board is the app's figure-app.json (README).
+   */
+  LK.board = function (exportButton, makeSvg) {
+    const origin = global.parent !== global && document.referrer ? new URL(document.referrer).origin : '';
+    if (!origin || !exportButton) return null;
+    const button = el('button', {
+      class: exportButton.className.replace(/\bprimary\b/g, '').trim() || null,
+      title: 'The figure, as the SVG export makes it, onto the board as live vector',
+      text: 'Send to board',
+      onclick: async () => {
+        try {
+          const svg = await makeSvg();
+          if (typeof svg === 'string' && svg) global.parent.postMessage({ type: 'board', v: 1, svg }, origin);
+        } catch (err) {
+          alert('Could not send to the board: ' + (err.message || err));
+        }
+      },
+    });
+    exportButton.after(button);
+    return button;
   };
 
   global.LK = LK;
