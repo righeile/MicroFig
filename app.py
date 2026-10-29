@@ -201,7 +201,11 @@ def export_batch():
     """Write many figures (one per plan) straight to disk."""
     body = request.get_json(force=True) or {}
     jobs = body.get("jobs") or []
-    out_dir = os.path.abspath(os.path.expanduser(body.get("out_dir") or os.path.expanduser("~/Desktop")))
+    # No default: a batch that lands on the Desktop because nobody said where
+    # is a folder of figures somebody has to tidy, and the page asks first.
+    if not str(body.get("out_dir") or "").strip():
+        return jsonify({"error": "say where the figures go: set an output folder"}), 400
+    out_dir = os.path.abspath(os.path.expanduser(body["out_dir"]))
     fmt = (body.get("format") or "svg").lower()
     os.makedirs(out_dir, exist_ok=True)
     written, errors = [], []
