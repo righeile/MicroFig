@@ -427,11 +427,13 @@ def format_p(
     if not np.isfinite(p_value):
         return ""
 
+    # Each cut is made on the number as it will be printed: 0.000999 is
+    # "1.0e-3" in two figures, which is 0.001 and reads as one.
     if p_value < floor:
         number = f"p < {floor:g}"
-    elif p_value >= 0.1:
+    elif float(f"{p_value:.3f}") >= 0.1:
         number = f"p = {p_value:.2f}"
-    elif p_value >= 0.001:
+    elif float(f"{p_value:.1e}") >= 0.001:
         number = f"p = {p_value:.3f}"
     else:
         number = f"p = {p_value:.1e}".replace("e-0", "e-")

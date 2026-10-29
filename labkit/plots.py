@@ -1005,12 +1005,15 @@ def xy_plot(
         if n_max:
             label = f"{label} (n={n_max})"
 
-        if error in ("band", "both"):
-            band = np.where(np.isfinite(sem), sem, 0.0)
+        band = np.where(np.isfinite(sem), sem, 0.0)
+        # No spread given is no band, rather than one of no width -- or a cap
+        # drawn on every point of a curve that has no error to show.
+        spread = band[good].any()
+        if spread and error in ("band", "both"):
             ax.fill_between(x[good], (mean - band)[good], (mean + band)[good],
                             color=colour, alpha=0.18, linewidth=0, zorder=2)
-        if error in ("bars", "both"):
-            ax.errorbar(x[good], mean[good], yerr=np.where(np.isfinite(sem), sem, 0.0)[good],
+        if spread and error in ("bars", "both"):
+            ax.errorbar(x[good], mean[good], yerr=band[good],
                         fmt="none", ecolor=colour, elinewidth=0.7, capsize=1.6,
                         capthick=0.7, zorder=3)
         if join:
@@ -1081,10 +1084,11 @@ def trace_plot(
         if not good.any():
             continue
         spread = np.where(np.isfinite(sem), sem, 0.0)
-        if band and error in ("band", "both"):
+        shown = band and spread[good].any()      # none given: no band of no width
+        if shown and error in ("band", "both"):
             ax.fill_between(x[good], (mean - spread)[good], (mean + spread)[good],
                             color=colour, alpha=0.16, linewidth=0, zorder=2)
-        if band and error in ("bars", "both"):
+        if shown and error in ("bars", "both"):
             # A bar per sample would be a smear; a handful along the trace is
             # readable and says the same thing.
             step = max(1, int(good.sum() // 12))
@@ -1509,6 +1513,12 @@ class PlotSpec:
     #: Scale bar lengths: seconds, and the current unit. 0 picks round ones.
     scale_x_s: float = 0.0
     scale_y: float = 0.0
+    #: A trace's scale bars are in its own data's units, which these name:
+    #: ``scale_x`` is the time bar in ``x_unit`` and ``scale_y`` the value bar
+    #: in ``y_unit``.  0 picks round ones, as for a family.
+    scale_x: float = 0.0
+    x_unit: str = "ms"
+    y_unit: str = "pA/pF"
     #: Shade each step's SEM. Off by default: fourteen overlapping bands hide
     #: the currents they describe.
     family_spread: bool = False
@@ -1991,6 +2001,8 @@ def figure_from_spec(
                        line_width=spec.line_width,
                        line_styles=_cycle(spec.line_styles, "-"),
                        scale_bars=spec.spines in ("auto", "none"),
+                       x_length=spec.scale_x or None, y_length=spec.scale_y or None,
+                       x_unit=spec.x_unit, y_unit=spec.y_unit,
                        xlabel=spec.xlabel, ylabel=spec.ylabel)
         else:
             ax, positions = group_plot(
