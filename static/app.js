@@ -1852,6 +1852,21 @@ async function exportFigure(fmt) {
   } finally { busy(false); }
 }
 
+/** The figure as the SVG export renders it, handed to omnifig's board when
+ *  MicroFig is open in omnifig's tab; the board places it as live vector. */
+async function sendToBoard(origin) {
+  busy(true, 'rendering SVG…');
+  try {
+    const r = await fetch('/api/export', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: planForExport(), format: 'svg' }),
+    });
+    if (!r.ok) { alert('Send failed: ' + (await r.text()).slice(0, 400)); return; }
+    window.parent.postMessage({ type: 'board', svg: await r.text() }, origin);
+    status('sent to the board');
+  } finally { busy(false); }
+}
+
 async function batchExport() {
   const dir = $('batch-dir').value.trim();
   if (!dir) { alert('Set an output folder for the batch export.'); return; }
@@ -2180,6 +2195,16 @@ function initUI() {
 
   // export
   $('btn-export-svg').onclick = () => exportFigure('svg');
+  // Open on its own there is no board, so no button.
+  const boardOrigin = window.parent !== window && document.referrer ? new URL(document.referrer).origin : '';
+  if (boardOrigin) {
+    const b = document.createElement('button');
+    b.className = 'btn';
+    b.textContent = 'Send to board';
+    b.title = "The figure, as the SVG export renders it, onto omnifig's board as live vector";
+    b.onclick = () => sendToBoard(boardOrigin);
+    $('btn-export-svg').after(b);
+  }
   $('btn-export-2').onclick = () => exportFigure();
   $('btn-export-batch').onclick = () => {
     document.querySelector('#tabs button[data-tab=export]').click();
