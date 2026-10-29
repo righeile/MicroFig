@@ -256,6 +256,22 @@ def check_svg_background():
     print("  svg: background rect only when opaque, physical size intact")
 
 
+def check_text_halo():
+    """A white scale bar on a brightfield merge is invisible without one, and the
+    two backends have to agree that the halo sits behind the glyph, not over it."""
+    bar = dict(type="rect", x=1, y=20, w=20, h=3, fill="#ffffff",
+               stroke="#000000", stroke_width=0.75)
+    txt = dict(bar, type="text", text="20", size=10, anchor="middle", y=15)
+    plan = dict(width=40, height=30, dpi=150, background="#cccccc", items=[bar, txt])
+    svg = R.build_svg(plan)
+    assert 'paint-order="stroke"' in svg, "svg text lost its halo"
+    assert np.array(R.build_raster(plan, scale=3).convert("L")).min() < 60, \
+        "raster text lost its halo"
+    plan["items"] = [dict(txt, stroke="none")]
+    assert 'paint-order' not in R.build_svg(plan), "halo drawn where none was asked for"
+    print("  halo: scale bar and its label stay readable on a light panel")
+
+
 def check_plane_clamp():
     """?max=0 once downsampled a plane to nothing, which handed the browser a
     0 x 0 canvas and killed the preview."""
@@ -306,6 +322,7 @@ if __name__ == "__main__":
     check_merge_within_one()
     check_flatten_background()
     check_svg_background()
+    check_text_halo()
     check_plane_clamp()
     check_thumbnail_scene_hidden()
     print("all checks passed")

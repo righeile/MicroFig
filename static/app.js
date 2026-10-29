@@ -832,15 +832,17 @@ function buildPlan() {
       const bottom = SC.corner.startsWith('b');
       const bx = right ? p.x + p.w - m - barLen : p.x + m;
       const by = bottom ? p.y + p.h - m - th : p.y + m;
+      const halo = contrastTo(SC.color);
       items.push({ type: 'rect', x: bx, y: by, w: barLen, h: th,
-                   fill: SC.color, stroke: 'none', stroke_width: 0 });
+                   fill: SC.color, stroke: halo, stroke_width: 0.75 });
       if (SC.label) {
         const txt = SC.units === 'nm' ? `${Math.round(barUm * 1000)} nm`
                                       : `${formatNum(barUm)} µm`;
         items.push(textItem(`sb/${p.img.id}/${cellKey(p.cell)}`,
                    { type: 'text', x: bx + barLen / 2,
                      y: bottom ? by - 3 : by + th + SC.labelSize + 1,
-                     text: txt, fill: SC.color, size: SC.labelSize, family: fontFamily,
+                     text: txt, fill: SC.color, stroke: halo, stroke_width: 1,
+                     size: SC.labelSize, family: fontFamily,
                      weight: 'normal', anchor: 'middle', baseline: 'alphabetic' }));
       }
     });
@@ -866,6 +868,12 @@ function buildPlan() {
   };
 }
 
+// Rec. 709 luma: picks the halo that makes the bar readable on either background.
+function contrastTo(hex) {
+  const h = (hex || '#ffffff').replace('#', '');
+  const n = h.length === 3 ? h.split('').map(c => parseInt(c + c, 16)) : [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
+  return (0.2126 * n[0] + 0.7152 * n[1] + 0.0722 * n[2]) > 140 ? '#000000' : '#ffffff';
+}
 function formatNum(v) { return (Math.round(v * 100) / 100).toString(); }
 
 function titleColorOf(cell) {

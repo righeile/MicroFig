@@ -283,7 +283,11 @@ def build_svg(plan: dict) -> str:
                 f'font-family="{sax.escape(str(family))}" font-size="{_fmt(item.get("size", 12))}" '
                 f'font-weight="{sax.escape(str(weight))}" font-style="{style}" '
                 f'fill="{sax.escape(str(item.get("fill", "#ffffff")))}" text-anchor="{anchor}" '
-                f'dominant-baseline="{sax.escape(str(baseline))}" '
+                + (f'stroke="{sax.escape(str(item["stroke"]))}" '
+                   f'stroke-width="{_fmt(item.get("stroke_width", 1))}" '
+                   f'paint-order="stroke" stroke-linejoin="round" '
+                   if item.get("stroke") and item["stroke"] != "none" else "")
+                + f'dominant-baseline="{sax.escape(str(baseline))}" '
                 f'xml:space="preserve">{sax.escape(str(item.get("text", "")))}</text>'
             )
     parts.append("</svg>")
@@ -381,12 +385,16 @@ def build_raster(plan: dict, scale: Optional[float] = None) -> Image.Image:
             color = hex_to_rgb255(item.get("fill", "#ffffff")) + (255,)
             rot = float(item.get("rotate", 0) or 0)
             text = str(item.get("text", ""))
+            halo = item.get("stroke")
+            hw = (max(1, int(round(float(item.get("stroke_width", 1)) * scale)))
+                  if halo and halo != "none" else 0)
+            kw = dict(stroke_width=hw, stroke_fill=hex_to_rgb255(halo) + (255,)) if hw else {}
             if not rot:
-                draw.text(xy, text, font=font, fill=color, anchor=ax + ay)
+                draw.text(xy, text, font=font, fill=color, anchor=ax + ay, **kw)
             else:
                 tmp = Image.new("RGBA", (max(8, size * (len(text) + 2)), size * 3), (0, 0, 0, 0))
                 td = ImageDraw.Draw(tmp)
-                td.text((tmp.width / 2, tmp.height / 2), text, font=font, fill=color, anchor="mm")
+                td.text((tmp.width / 2, tmp.height / 2), text, font=font, fill=color, anchor="mm", **kw)
                 tmp = tmp.rotate(-rot, expand=True, resample=Image.BICUBIC)
                 canvas.alpha_composite(tmp, (int(xy[0] - tmp.width / 2), int(xy[1] - tmp.height / 2)))
 
