@@ -14,7 +14,8 @@
  *   LK.swapWells(labels, a, b)        move a well's contents, or swap two
  *   LK.api(url, opts)                 fetch that throws the server's message
  *   LK.nameMatch(query)              a filter box, as a predicate over a name
- *   LK.board(exportButton, makeSvg)   Send to board, in the figure editor's tab
+ *   LK.board(exportButton, makeSvg, {key, base, source, open})   Send to board, linked, from anywhere
+ *   LK.board.onOpen(fn)                              omnifig asks for the view a panel came from
  */
 (function (global) {
   'use strict';
@@ -826,6 +827,16 @@
         + 'column is published: they reduce figures to 85 mm wherever they can.',
       source: 'rupress.org/jgp/pages/fig-vid-guidelines',
     },
+    jci: {
+      label: 'JCI / JCI Insight',
+      widths: { '1 column': 90, '2 columns': 180 },
+      font_pt: 8, dpi: 600, max_height_mm: 172.5,
+      note: 'Helvetica or Arial, 6–8 pt, panel letters uppercase roman (A, B, C). '
+        + '600 ppi for every image, RGB. Whole figure 9–18 cm wide and at most '
+        + '17.25 cm tall. They publish the range, not columns; 9 and 18 cm are its ends. '
+        + 'Read 2026-11-03 from the shared ASCI page, headed JCI Insight.',
+      source: 'jci.org/kiosks/publish/figures',
+    },
   };
 
   /* What a preset sets on top of the journal's own numbers.
@@ -900,7 +911,7 @@
       horizontal: false,
       font_pt: 8, font: 'arial',
       log_y: false, show_n: true, legend: true,
-      title: '', ylabel: '', xlabel: '',
+      title: '', ylabel: '', xlabel: '', rename: '',
       show_p: true, p_style: 'auto', p_test: 'mann-whitney',
       p_correction: 'fdr_bh', p_pairs: 'all', p_only_significant: false,
       p_use_corrected: true, p_align: 'stagger', p_alpha: 0.05, p_pair_on: '',
@@ -910,8 +921,8 @@
       log_x: false, ref_lines: '', legend_loc: 'best', dpi: 300,
       error_style: 'band', markers: 'o', marker_size: 2.6, line_width: 1.0,
       line_styles: '-', join: true, point_size: 3.2,
-      panel_width_mm: 25.4, panel_height_mm: 38.1, panel_cols: 0,   // 1 x 1.5 in
-      scale_x_s: 0, scale_y: 0, family_spread: false, family_colour: 'voltage',
+      panel_width_mm: 20, panel_height_mm: 20, panel_cols: 0,
+      scale_x_s: 0, scale_y: 0, n_pt: 7, family_spread: false, family_protocol: false, family_layout: '', family_colour: 'black',
     };
   };
 
@@ -961,10 +972,11 @@
     const root = el('div', { class: 'plotctl' });
 
     const allKinds = [
-      ['bar', 'Bars', 'Group means. Degrades to "points only" under n = 3.'],
+      ['bar', 'Bars', 'Group means. Degrades to "estimate" under n = 3.'],
       ['box', 'Box', 'Median, quartiles, whiskers.'],
       ['violin', 'Violin', 'The whole distribution. Needs n of about 8 to mean anything.'],
-      ['none', 'Points only', 'The center as a line, nothing else claimed.'],
+      ['hist', 'Histogram', 'Every group overlaid in shared bins, each as a fraction of its own n.'],
+      ['none', 'Estimate', 'The center as a dot on its error bar, as in the pHerret estimate panel.'],
     ];
     const kinds = opts.kinds ? allKinds.filter((k) => opts.kinds.includes(k[0])) : allKinds;
 
@@ -1122,7 +1134,7 @@
       + 'box still sets one bar\u2019s thickness and the axes box now pins the '
       + 'width. Worth it for long group names, which get a whole column to '
       + 'themselves instead of 6.35 mm of tick.'],
-     ['show_n', 'n on the axis', 'Put (n = …) beside each group label'],
+     ['show_n', 'Show n', 'Put (n = …) beside each group label, or in the legend of a curve'],
      ['log_y', 'Log value axis', 'The values, wherever they are: x on a turned panel.'],
      ['legend', 'Legend', '']].forEach(([key, label, title]) => {
       const built = checkRow(label, 'lk-' + key, state[key], title);
@@ -1158,14 +1170,17 @@
       ['title', textRow('Title', 'lk-title', '', 'Usually better in the caption than on the axes')],
       ['xlabel', textRow('x label', 'lk-xlabel', 'Voltage (mV)', '')],
       ['ylabel', textRow('y label', 'lk-ylabel', 'Current density (pA/pF)', '')],
+      ['rename', textRow('Rename', 'lk-rename', '74 = 161, loCl = 41',
+        'Print a group under another name: old = new, separated by commas. A whole name, or one part of a ' +
+        'two-part one like "WT / 74". Only the printed text changes: colors, order and the p-value pairs keep the old names.')],
     ]);
 
     // --- axes and curves -------------------------------------------------
     // Folded away: the defaults are publication-ready, and these are for the
     // figure that has to match one already drawn.
     section('Axes', [
-      ['xlim', textRow('x limits', 'lk-xlim', 'min, max', 'Empty leaves the range to the data')],
-      ['ylim', textRow('y limits', 'lk-ylim', 'min, max', 'Empty leaves the range to the data')],
+      ['xlim', textRow('x limits', 'lk-xlim', 'min, max', 'Empty leaves the range to the data; "0," starts at 0 and leaves the other end to it')],
+      ['ylim', textRow('y limits', 'lk-ylim', 'min, max', 'Empty leaves the range to the data; "0," starts at 0 and leaves the other end to it')],
       ['xticks', textRow('x ticks', 'lk-xticks', '0, 20, 40  ·  step 20',
         'Where the ticks go: a list, or "step 20" for regular ones')],
       ['xtick_labels', textRow('x tick text', 'lk-xticklabels', 'WT, KO',
@@ -1182,7 +1197,7 @@
         'A grid competes with the data; none is usually right')],
       ['spines', selectRow('Axis lines', 'lk-spines',
         [['auto', 'As the plot kind wants'], ['lb', 'Left and bottom'], ['box', 'Full box'],
-         ['zero', 'Crossing at zero'], ['none', 'None (scale bars)']],
+         ['zero', 'Crossing at zero'], ['x0', 'x axis at y = 0'], ['none', 'None (scale bars)']],
         'Crossing at zero is the IV convention: the origin is a real place and the reversal potential is read off it')],
       ['log_x', checkRow('Log x axis', 'lk-logx', false, '')],
       ['ref_lines', textRow('Reference lines', 'lk-reflines', '0, -30',
@@ -1195,12 +1210,14 @@
         'For the PNG; the SVG is vector whatever this says')],
     ]);
 
-    section('Curves', [
+    section('Curves and points', [
       ['error_style', selectRow('Spread as', 'lk-errorstyle',
         [['band', 'Shaded band'], ['bars', 'Error bars'], ['both', 'Both'], ['none', 'Nothing']],
         'What the SEM (or SD, or CI) looks like on a curve')],
       ['markers', textRow('Markers', 'lk-markers', 'o, s, ^',
-        'Cycled across the curves, so they stay apart in print: o s ^ v D < > p * x +. Empty draws none.')],
+        'Cycled across the curves, so they stay apart in print: o circle, s square, D diamond, ^ v < > triangles, ' +
+        'p pentagon, h hexagon, * star, x and + crosses. Empty draws none. Every shape is drawn at the area of the circle. ' +
+        'On a box or bar plot with names like "WT / 0 min", cycled across the second part: o, D makes every 0 min a circle and every 3 min a diamond.')],
       ['marker_size', numberRow('Marker size', 'lk-markersize', { min: '0', max: '12', step: '0.2' }, '')],
       ['line_styles', textRow('Line styles', 'lk-linestyles', '-, --, :',
         'Cycled across the curves: - -- -. :')],
@@ -1216,7 +1233,7 @@
     const panelHField = el('input', { type: 'number', min: '0.2', step: '0.1' });
     const familyBox = section('Step families', [
       ['family_colour', selectRow('Color by', 'lk-familycolour',
-        [['voltage', 'Step voltage'], ['black', 'Black only']],
+        [['black', 'Black only'], ['voltage', 'Step voltage']],
         'A ramp across the steps, black, or one color per group — '
         + 'the grouping fields appear here once something is plotted')],
       ['panel_cols', numberRow('Panels per row', 'lk-panelcols', { min: '0', max: '8', step: '1' },
@@ -1225,11 +1242,17 @@
         '0 picks a round length')],
       ['scale_y', numberRow('Scale bar, current', 'lk-scaley', { min: '0', step: '5' },
         'In the plotted unit, e.g. 50 for 50 pA/pF. 0 picks a round length.')],
+      ['n_pt', numberRow('n size (pt)', 'lk-npt', { min: '4', max: '12', step: '0.5' },
+        'The n under each panel title')],
       ['family_spread', checkRow("Shade each step's SEM", 'lk-familyspread', false,
         'Off by default: fourteen overlapping bands hide the currents they describe')],
+      ['family_protocol', checkRow('Draw the protocol below', 'lk-familyprotocol', false,
+        "The recordings' own voltage protocol, under the first panel at its width and time scale")],
+      ['family_layout', textRow('Layout', 'lk-familylayout', 'n.t. | protocol; WT; E110A | R362G; E247G | P716L',
+        'Constructs by name: rows split by ";", places in a row by "|", "protocol" for the protocol (with its scale bar). Each row only as tall as its currents. Empty: a grid')],
     ]);
     familyBox.insertBefore(
-      el('label', { class: 'row', title: 'One panel, in the unit chosen under Size — your old subplotsize' },
+      el('label', { class: 'row', title: 'The traces of one panel, in the unit chosen under Size; titles go above them' },
         [el('span', { text: 'Panel size' }), el('div', { class: 'pair' }, [
           el('label', {}, [el('span', { class: 'dim', text: 'w' }), panelWField]),
           el('label', {}, [el('span', { class: 'dim', text: 'h' }), panelHField])])]),
@@ -1251,8 +1274,9 @@
       ['p_test', selectRow('Test', 'lk-ptest',
         [['mann-whitney', 'Mann-Whitney'], ['welch', 'Welch t'],
          ['student', 'Student t'], ['wilcoxon', 'Wilcoxon (paired)'],
-         ['paired-t', 'Paired t']],
-        'Rank tests make no normality assumption; the paired ones need a pairing column')],
+         ['paired-t', 'Paired t'], ['paired-pooled', 'Paired t, pooled variance'],
+         ['ratio-pooled', 'Ratio t, pooled variance']],
+        'Rank tests make no normality assumption; the paired ones need a pairing column. Pooled: one variance from every comparison, on log ratios for "ratio"')],
       ['p_correction', selectRow('Correct', 'lk-pcorr',
         [['fdr_bh', 'FDR (Benjamini–Hochberg)'], ['holm', 'Holm'],
          ['bonferroni', 'Bonferroni'], ['none', 'None']],
@@ -1307,8 +1331,8 @@
       const round = (v) => Math.round(v * places) / places;
       widthField.value = round((state.width_mm || 0) / factor);
       heightField.value = state.height_mm ? round(state.height_mm / factor) : 0;
-      panelWField.value = round((state.panel_width_mm || 25.4) / factor);
-      panelHField.value = round((state.panel_height_mm || 38.1) / factor);
+      panelWField.value = round((state.panel_width_mm || 20) / factor);
+      panelHField.value = round((state.panel_height_mm || 20) / factor);
       axesWField.value = state.axes_width_mm ? round(state.axes_width_mm / factor) : 0;
       axesHField.value = state.axes_height_mm ? round(state.axes_height_mm / factor) : 0;
       barField.value = state.bar_mm ? round(state.bar_mm / factor) : 0;
@@ -1432,7 +1456,7 @@
       // A paired test is the only one that needs a pairing column, so the box
       // only exists when one is chosen -- an empty field nobody has to wonder
       // about is worse than no field.
-      pairOnRow.hidden = !(state.p_test === 'wilcoxon' || state.p_test === 'paired-t');
+      pairOnRow.hidden = !['wilcoxon', 'paired-t', 'paired-pooled', 'ratio-pooled'].includes(state.p_test);
       buildSwatches();
       preview.textContent = describe(state);
     }
@@ -1607,12 +1631,16 @@
         const colourField = fields.family_colour;
         const current = state.family_colour || colourField.value;
         colourField.innerHTML = '';
-        [['voltage', 'Step voltage'], ['black', 'Black only']].forEach(([v, t]) =>
+        [['black', 'Black only'], ['voltage', 'Step voltage']].forEach(([v, t]) =>
           colourField.appendChild(el('option', { value: v, text: t })));
         (names || []).forEach((name) => colourField.appendChild(
           el('option', { value: name, text: 'By ' + String(name).replace(/_/g, ' ') })));
         colourField.value = current;
-        if (colourField.selectedIndex < 0) colourField.value = 'voltage';
+        if (colourField.selectedIndex < 0) colourField.value = 'black';
+        // Called once a family is on screen, and the controls that shape one --
+        // panels per row, the scale bars -- are all in here. Folded away they
+        // read as absent, so the one section that applies opens itself.
+        familyBox.open = true;
         readFields();
       },
     };
@@ -1917,36 +1945,172 @@
   };
 
   /**
-   * Send to board: an app open in a tab of the figure editor (omnifig) hands
-   * the editor's board its figure, which lands there as live vector.  The
-   * button goes after `exportButton`, the app's Export SVG, looking like it
-   * without its emphasis.  `makeSvg` returns the SVG text as that export
-   * writes it, or a promise of it; nothing returned, nothing sent.  Open on
-   * its own an app has no board, so no button.
+   * Send to board: the figure onto the board of the figure editor (omnifig),
+   * where it lands as live vector.  The button goes after `exportButton`, the
+   * app's Export SVG, looking like it without its emphasis.  `makeSvg` returns
+   * the SVG text as that export writes it, or a promise of it; nothing
+   * returned, nothing sent.
    *
-   * The message is {type: 'board', v: 1, svg}, posted to the framing page's
-   * origin only; the board knows which app sent it by its frame.  The rest
-   * of joining the board is the app's figure-app.json (README).
+   * In an omnifig tab the message is {type: 'board', v: 1, svg, app, key,
+   * update}, posted to the framing page's origin only.  Open on its own, the
+   * app's server sends it (labkit/board.py) to the omnifig running, or to one
+   * it starts -- where the server has that route; without it, no button.
+   *
+   * `opts.key` (a string, or a function returning one or null) links what is
+   * sent: after each redraw `handle.changed(...deps)` sends it again, as an
+   * update omnifig redraws in place, if that key was sent before and the deps
+   * are not the ones it was last drawn from.  No deps, every call sends.
+   * "Sent before" is this browser's memory; `opts.linked(key)` true says the
+   * page knows the key is on the board anyway (a saved session that is).
+   * Neither, the page's server asks omnifig whether it has the key, so a
+   * figure sent from another browser, or by a script, follows too.
+   * `opts.base` (a string or function) is the part of the key that says what
+   * the figure is, the rest being how it is shown -- conditions left out,
+   * groups picked.  A change of the rest then redraws the panel this figure
+   * last went to instead of being a figure of its own, unless omnifig has a
+   * panel of that very view; the view is kept as that panel's, in this
+   * browser, so a reload follows it too.  Send to board starts a panel of the
+   * view as it is.  No base, every key is a figure of its own.
+   * `opts.open` (a value, or a function returning one or a promise of it,
+   * JSON) is how to get back to the figure -- a session, the controls --
+   * kept by omnifig with the panel.  Its "open in" hands it back, the app
+   * opened in its tab, to the function given to `LK.board.onOpen(fn)`, as
+   * fn(open, key).
+   * `opts.app` names the app (the page's title by default), `opts.class` the
+   * button's class (the anchor's, unemphasized, by default).  Returns the
+   * handle {place(anchor), changed(...deps)}, placed at once on an anchor.
    */
-  LK.board = function (exportButton, makeSvg) {
-    const origin = global.parent !== global && document.referrer ? new URL(document.referrer).origin : '';
-    if (!origin || !exportButton) return null;
-    const button = el('button', {
-      class: exportButton.className.replace(/\bprimary\b/g, '').trim() || null,
-      title: 'The figure, as the SVG export makes it, onto the board as live vector',
-      text: 'Send to board',
-      onclick: async () => {
-        try {
-          const svg = await makeSvg();
-          if (typeof svg === 'string' && svg) global.parent.postMessage({ type: 'board', v: 1, svg }, origin);
-        } catch (err) {
-          alert('Could not send to the board: ' + (err.message || err));
-        }
+  const boardSent = (() => {
+    try { return new Set(JSON.parse(localStorage.getItem('lk.board.sent') || '[]')); } catch (e) { return new Set(); }
+  })();
+  const boardDrawn = new Map();       // key -> the deps it was last drawn from
+  let boardServer = null;             // whether this page's server can send: a promise, asked once
+  const boardAs = () => { try { return JSON.parse(localStorage.getItem('lk.board.as')) || {}; } catch (e) { return {}; } };
+  function setBoardAs(view, key) {    // view key -> the panel's key it redraws; none, its own
+    const as = boardAs();
+    delete as[view];
+    if (key && key !== view) as[view] = key;
+    const keep = Object.keys(as).slice(-300);
+    try { localStorage.setItem('lk.board.as', JSON.stringify(Object.fromEntries(keep.map((k) => [k, as[k]])))); } catch (e) { /* this visit only */ }
+  }
+  function boardHas(key, o) {         // the key on the board: known here, or omnifig says so
+    if (boardSent.has(key) || (o.linked && o.linked(key))) return Promise.resolve(true);
+    return LK.api('/api/board?key=' + encodeURIComponent(key)).then((r) => {
+      if (r && r.linked) boardSent.add(key);
+      return !!(r && r.linked);
+    }, () => false);
+  }
+  LK.board = function (exportButton, makeSvg, opts) {
+    const o = opts || {};
+    const framed = global.parent !== global && document.referrer ? new URL(document.referrer).origin : '';
+    const keyOf = () => (typeof o.key === 'function' ? o.key() : o.key) || null;
+    const baseOf = () => (typeof o.base === 'function' ? o.base() : o.base) || null;
+    const app = o.app || document.title || 'an app';
+    let linked = null;                // {base, key}: the panel this figure last went to
+    async function target(view) {     // the key a change shown as `view` redraws, or null
+      const base = baseOf();
+      if (await boardHas(view, o)) { linked = { base, key: view }; return view; }
+      const key = base && (boardAs()[view] || (linked && linked.base === base ? linked.key : null));
+      if (!key || !(await boardHas(key, o))) return null;
+      linked = { base, key };
+      setBoardAs(view, key);
+      return key;
+    }
+    async function deliver(key, update) {
+      const svg = await makeSvg();
+      if (typeof svg !== 'string' || !svg) return;
+      // The source data behind the figure, path(s) on this machine: omnifig
+      // keeps them with the panel and saves them by figure and panel letter.
+      const source = [].concat((typeof o.source === 'function' ? o.source() : o.source) || []).filter(Boolean).map(String);
+      const open = typeof o.open === 'function' ? await Promise.resolve().then(o.open).catch(() => undefined) : o.open;
+      if (framed) global.parent.postMessage({ type: 'board', v: 1, svg, app, key, update, source, open }, framed);
+      else await LK.api('/api/board', { body: { svg, key, update, source, open } });
+      if (key && !update) {
+        boardSent.add(key);
+        try { localStorage.setItem('lk.board.sent', JSON.stringify(Array.from(boardSent).slice(-500))); } catch (e) { /* not kept: links last this visit */ }
+      }
+    }
+    let timer = null;
+    const handle = {
+      place(anchor) {
+        if (!anchor) return null;
+        if (!framed && !boardServer) boardServer = LK.api('/api/board').then(() => true, () => false);
+        const button = el('button', {
+          class: o.class || (anchor.className || '').replace(/\bprimary\b/g, '').trim() || null,
+          title: 'The figure, as the SVG export makes it, onto the board as live vector' +
+            (o.key ? '; linked, so a change here redraws it there' : ''),
+          text: 'Send to board',
+          onclick: async () => {
+            button.disabled = true;
+            try {
+              const key = keyOf();
+              await deliver(key, false);
+              if (key) { linked = { base: baseOf(), key }; setBoardAs(key, null); }
+              button.textContent = 'Sent';
+              setTimeout(() => { button.textContent = 'Send to board'; }, 1500);
+            } catch (err) {
+              alert('Could not send to the board: ' + (err.message || err));
+            } finally { button.disabled = false; }
+          },
+        });
+        if (!framed) { button.hidden = true; boardServer.then((ok) => { button.hidden = !ok; }); }
+        anchor.after(button);
+        return button;
       },
-    });
-    exportButton.after(button);
-    return button;
+      changed(...deps) {
+        const key = keyOf();
+        if (!key) return;
+        const was = boardDrawn.get(key);
+        boardDrawn.set(key, deps);
+        if (was && deps.length && deps.length === was.length && deps.every((d, i) => d === was[i])) return;
+        clearTimeout(timer);
+        // After the redraws stop: a dragged control is one update, not twenty.
+        timer = setTimeout(async () => {
+          const to = keyOf() === key && await target(key);
+          if (to && keyOf() === key) deliver(to, true).catch(() => {});
+        }, 1200);
+      },
+    };
+    handle.place(exportButton);
+    return handle;
   };
+  // omnifig's "open in": {type: 'board-open', key, open} from the page
+  // framing this one, kept until the app says what to do with it.
+  let boardOpen = null, boardAsked = null;
+  function boardOpened() {
+    if (!boardOpen || !boardAsked) return;
+    const a = boardAsked;
+    boardAsked = null;
+    Promise.resolve(boardOpen(a.open, a.key)).catch((err) => alert('Could not open it: ' + (err.message || err)));
+  }
+  global.addEventListener('message', (ev) => {
+    if (global.parent === global || ev.source !== global.parent || !document.referrer ||
+        ev.origin !== new URL(document.referrer).origin || !ev.data || ev.data.type !== 'board-open') return;
+    boardAsked = ev.data;
+    boardOpened();
+  });
+  LK.board.onOpen = (fn) => { boardOpen = fn; boardOpened(); };
 
   global.LK = LK;
 }(window));
+
+// ── labkit: server lifetime ──────────────────────────────────────────────
+// Holds one connection open to this app's server while any of its pages is,
+// so that closing the last tab or window stops the server (labkit/lifetime.py).
+// One tab at a time holds it -- a browser allows only six connections per
+// server -- and when that tab goes, however it goes, the next one takes over
+// inside the server's grace period; a reload never stops it.  Silent where the
+// server does not know the route (404), in a page opened from a file, and in a
+// WebDriver/Playwright-driven browser: automation keeps its server.
+(function (global) {
+  const nav = global.navigator, loc = global.location;
+  if (!nav || !global.EventSource || nav.webdriver || !loc || !/^https?:$/.test(loc.protocol)) return;
+  const hold = () => new Promise((done) => {
+    const live = new global.EventSource('/__labkit/live');
+    live.onerror = () => { if (live.readyState === 2) done(); };   // refused for good: let it go
+  });
+  if (nav.locks) nav.locks.request('labkit-lifetime', hold);
+  else hold();
+  global.addEventListener('pageshow', (ev) => { if (ev.persisted) hold(); });   // back from bfcache
+}(window));
+// ── end server lifetime ──────────────────────────────────────────────────

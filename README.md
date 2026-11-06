@@ -24,7 +24,8 @@ it satisfies `requirements.txt`; the app imports nothing else.
 
 `bioio` is what reads the microscope formats, one reader package per family —
 `bioio-czi`, `bioio-tifffile` (also LSM), `bioio-ome-tiff`, `bioio-nd2`,
-`bioio-lif`. All come from `requirements.txt`, but a reader that failed to build
+`bioio-lif`, `bioio-dv`. Four formats bioio can only reach through a JVM have
+readers of their own in `imgio.py`, on `olefile`, `oiffile` and `h5py`. All come from `requirements.txt`, but a reader that failed to build
 does not announce itself: the format simply reports as unsupported. `python3 -c
 "import bioio_czi"` says whether CZI is there.
 
@@ -57,14 +58,37 @@ needed. The levels check is skipped if `node` is not installed.
 
 ## Formats
 
-CZI, TIFF / OME-TIFF, LSM, ND2, LIF and ordinary PNG/JPG — anything `bioio` has a
-reader package for. 16-bit data is kept at full depth all the way to export; only
-the on-screen preview is downsampled.
+CZI, TIFF / OME-TIFF, LSM, ND2, LIF, DeltaVision (`.dv`, `.r3d`), SlideBook 7
+(`.sldy`), MetaMorph `.stk`, BigTIFF (`.btf`) and ordinary PNG/JPG through `bioio`,
+plus these with readers of their own:
 
-`.oib`, `.oif`, `.zvi` and `.ims` are offered by the file browser but need
-`bioio-bioformats`, which needs a JVM, so they do not open. `.sld` is not
-supported: its reader is the one package in the bioio family still pinned to
-numpy 1.
+- **TILLvisION** (`.vws`). Open the workspace; the pixels are read from the
+  `<name>.pst/` folder beside it, one recording per channel, named by its
+  excitation wavelength. A snapshot taken once beside a time series shows at
+  every time point. A renamed workspace still finds its old folder, and one with
+  no folder opens the snapshots kept inside it. No pixel size is recorded.
+- **Zeiss AxioVision** (`.zvi`), grayscale, calibrated. A z-stack would open as
+  time points -- every ZVI so far has been a time series.
+- **Olympus FluoView** (`.oib`, `.oif`), read whole.
+- **Imaris** (`.ims`), full resolution only.
+- **Leica LAS X** (`.lof`, `.xlef`, `.xlif`, `.xlcf`), each image of a project
+  a scene. A project missing some of its files opens the ones that are there.
+  A tile scan opens its first tile.
+- **Olympus FluoView OIR** (`.oir`, FV3000/FV4000). A lambda scan's bands open
+  as channels, named by wavelength.
+- **Abberior Imspector** (`.obf`, `.msr`). Stacks of one shape -- the channels of
+  one acquisition -- open together as one scene's channels. An `.msr` saved as
+  an Imspector document rather than OBF is refused: save it as `.obf`.
+
+Every reader above was checked against a public sample from the OME image
+collection (downloads.openmicroscopy.org/images) on 2026-11-03.
+
+16-bit data is kept at full depth all the way to export; only the on-screen
+preview is downsampled.
+
+Not read: the old binary SlideBook `.sld` and Leica `.lei` (only Bio-Formats, a
+JVM, reads them), slide-scanner pyramids (`.vsi`, `.svs`, `.ndpi`, `.scn`), FLIM
+photon data (`.sdt`, `.ptu`) and OME-Zarr.
 
 ## The workflow
 

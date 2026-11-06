@@ -17,6 +17,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from imgio import STORE, SUPPORTED_EXT, warm as warm_readers
+from labkit import board as LKBoard
 from labkit import browse as LKB
 import render as R
 
@@ -59,6 +60,8 @@ def index():
 # tools.  The formats it shows are still this app's own -- SUPPORTED_EXT lives
 # in imgio.py and is passed in rather than restated in JavaScript.
 app.register_blueprint(LKB.flask_blueprint(default_extensions=SUPPORTED_EXT))
+# Send to board with the page open on its own: the figure goes to omnifig from here.
+app.register_blueprint(LKBoard.flask_blueprint("MicroFig"))
 
 
 # --------------------------------------------------------------------------
@@ -321,6 +324,8 @@ def main():
     if "--no-browser" not in sys.argv:
         Timer(1.2, lambda: webbrowser.open(url)).start()
     print(f"\n  MicroFig running at {url}\n  Ctrl-C to stop\n")
+    from labkit import lifetime     # stop once the last browser window closes
+    lifetime.flask(app)
     app.run(host="127.0.0.1", port=port, debug="--debug" in sys.argv, threaded=True)
 
 

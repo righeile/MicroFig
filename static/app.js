@@ -5,6 +5,8 @@
 'use strict';
 
 // ===================================================================== state
+let board = null;        // Send to board's handle, once the buttons are wired
+let boardSession = null; // the loaded session, if it is saved as linked to omnifig
 const S = {
   images: [],            // {id, meta, label, enabled, crop, rotation, insets[], levels?}
   activeId: null,
@@ -14,6 +16,7 @@ const S = {
   invert: false,
   layout: {
     template: 'channels_merge', panelSize: 300, gap: 6, gridCols: 1, outerPad: 10,
+    colGap: null, rowGap: null,
     insetCount: 1, insetSize: 200, insetSizeH: 200, linkInsetSize: true,
     insetBox: true, insetLeader: false,
     insetColor: '#ffffff', insetStroke: 1.5, insetBorder: true,
@@ -504,7 +507,8 @@ function computeLayout() {
   const figTop = LB.figTitle ? LB.figTitleSize + 8 : 0;
   const top0 = pad + figTop + titleTop;
   const cols = Math.max(1, Math.round(L.gridCols) || 1);
-  const colGap = gap * 3, rowGap = gap * 2;
+  // blank = derived from the gap; set to match a layout drawn elsewhere (an .ai)
+  const colGap = L.colGap ?? gap * 3, rowGap = L.rowGap ?? gap * 2;
   const aspect = (img, cell) => { const s = cellSource(img, cell); return s.w / s.h; };
   /* A panel never stretches what it shows.  The grid hands out a slot; the panel
      takes its own source aspect inside it and sits centered, so a cut-out that is
@@ -960,6 +964,8 @@ function drawPreview() {
   if (S.showGuides) drawGuides(plan);
   drawSelection();
   updateStageInfo(plan);
+  // A linked board copy follows what is drawn, not the zoom or the selection.
+  if (board) board.changed(JSON.stringify(plan, (k, v) => (k === '_layout' ? undefined : v)));
 }
 
 function drawChecker(w, h) {
@@ -1179,6 +1185,7 @@ function bind(id, prop, target, cast, onChange) {
   const set = () => {
     let v = el.type === 'checkbox' ? el.checked : el.value;
     if (cast === Number) v = parseFloat(v) || 0;
+    else if (cast) v = cast(v);
     target[prop] = v;
     if (onChange) onChange(v);
     refresh();
@@ -1187,7 +1194,7 @@ function bind(id, prop, target, cast, onChange) {
   el.addEventListener('change', set);
   el._sync = () => {
     if (el.type === 'checkbox') el.checked = !!target[prop];
-    else el.value = target[prop];
+    else el.value = target[prop] ?? '';
   };
   el._sync();
 }
@@ -1206,10 +1213,18 @@ function isNuclear(name) {
 
 function initChannels(meta) {
   S.channels = meta.channels.map(c => ({
-    index: c.index, name: cleanName(c.name), color: c.color,
+    index: c.index, src: c.name, name: cleanName(c.name), color: c.color,
     black: Math.round(c.lo), white: Math.round(c.hi), gamma: 1, gain: 1,
     visible: !isTransmitted(c.name), inMerge: true, inInsets: !isNuclear(c.name),
   }));
+}
+
+// Do the settings fit this image?  Judged on the file's own channel names, not
+// the shown ones, which the user may have renamed.  Settings saved before `src`
+// existed keep their match on the count alone.
+function sameChannels(meta) {
+  return meta.channels.length === S.channels.length &&
+         meta.channels.every((c, i) => S.channels[i].src == null || S.channels[i].src === c.name);
 }
 
 function cleanName(n) {
@@ -1458,8 +1473,12 @@ async function doOpen(paths, replace) {
     const r = await jpost('/api/open', {
       paths, t: S.src.t, z_mode: S.src.zMode, z_index: S.src.zIndex, scene: S.src.scene,
     });
-    if (replace) { S.images = []; clearPlanes(); invalidateComposites(); }
-    const fresh = !S.channels.length;
+    if (replace) { S.images = []; S.activeId = null; clearPlanes(); invalidateComposites(); }
+    // Open replaces the figure: another file's channel names and levels go with
+    // it -- unless it has the same channels, as the next field of one experiment
+    // does, or Reload re-reading the same files at another time point
+    const first = (r.images || [])[0];
+    const fresh = !S.channels.length || (replace && first && !sameChannels(first));
     (r.images || []).forEach(meta => {
       if (S.images.some(i => i.meta.path === meta.path && i.meta.id === meta.id)) return;
       S.images.push({
@@ -1963,6 +1982,7 @@ async function applySession(d) {
   });
 
   // everything else is a full restore, not a merge onto whatever is current
+  Object.assign(S.layout, { colGap: null, rowGap: null });   // sessions older than these keys
   Object.keys(d).forEach(k => {
     if (k === 'images' || k === 'activePath' || S[k] === undefined) return;
     if (k === 'textOffsets') { S.textOffsets = d.textOffsets || {}; selText = null; return; }
@@ -2040,9 +2060,11 @@ function initUI() {
   };
 
   // layout / labels / scale / export bindings
+  const optGap = (v) => (v === '' ? null : parseFloat(v) || 0);
   const B = [
     ['template', 'template', S.layout], ['panel-size', 'panelSize', S.layout, Number],
     ['gap', 'gap', S.layout, Number], ['grid-cols', 'gridCols', S.layout, Number],
+    ['col-gap', 'colGap', S.layout, optGap], ['row-gap', 'rowGap', S.layout, optGap],
     ['outer-pad', 'outerPad', S.layout, Number],
     ['inset-count', 'insetCount', S.layout, Number],
     ['inset-size', 'insetSize', S.layout, Number, resizeInsetsFromFields],
@@ -2199,12 +2221,19 @@ function initUI() {
   };
 
   // browser
-  $('btn-open').onclick = () => openBrowser('open');
+  // other images are not the session any more: its board link must not follow them
+  $('btn-open').onclick = () => { $('session-select').value = ''; openBrowser('open'); };
   $('btn-add').onclick = () => openBrowser('add');
 
   // export
   $('btn-export-svg').onclick = () => exportFigure('svg');
-  LK.board($('btn-export-svg'), svgForBoard);   // in omnifig's tab, Send to board
+  // Send to board, linked: the figure is its session (else its first image, which
+  // two sessions can share), and a change here redraws it on omnifig's board.
+  board = LK.board($('btn-export-svg'), svgForBoard, {
+    app: 'MicroFig', key: () => ($('session-select').value ? 'session ' + $('session-select').value
+      : S.images[0] ? 'figure of ' + S.images[0].meta.path : null),
+    // a session saved as linked ("board": true) updates omnifig from any browser
+    linked: (k) => k === 'session ' + boardSession });
   $('btn-export-2').onclick = () => exportFigure();
   $('btn-export-batch').onclick = () => {
     document.querySelector('#tabs button[data-tab=export]').click();
@@ -2270,7 +2299,7 @@ function initUI() {
     if (!name) return;
     await fetch('/api/sessions/' + encodeURIComponent(name), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(sessionPayload()),
+      body: JSON.stringify({ ...sessionPayload(), board: name === boardSession || undefined }),
     });
     await loadSessionList(name);
     status('session saved: ' + name);
@@ -2287,6 +2316,7 @@ function initUI() {
     const d = await jget('/api/sessions/' + encodeURIComponent(name));
     if (d.error) { alert(d.error); return; }
     busy(true, 'loading session…');
+    boardSession = d.board ? name : null;   // before: its first redraw is already the update
     try { await applySession(d); } finally { busy(false); }
     status('session loaded: ' + name);
   };

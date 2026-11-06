@@ -1,6 +1,8 @@
 """Image loading, metadata extraction and caching for MicroFig.
 
-Supports CZI, (OME-)TIFF, LSM, ND2, LIF, PNG/JPG -- anything bioio can open.
+Supports CZI, (OME-)TIFF, LSM, ND2, LIF, DeltaVision, Slidebook, PNG/JPG --
+anything bioio can open -- plus the ones it reaches only through a JVM: Leica
+LOF/XLEF, Olympus OIB/OIF/OIR, Abberior OBF/MSR, Imaris, Zeiss ZVI, TILLvisION.
 Everything is normalized to a (C, Y, X) uint16 array plus a metadata record.
 """
 from __future__ import annotations
@@ -14,13 +16,16 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 RASTER_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".gif"}
-# .oib/.oif/.zvi/.ims are listed but need bioio-bioformats, which needs a JVM;
-# they have never opened here.  .sld is gone with aicsimageio: its bioio reader,
-# bioio-sldy, is the one package in the family still pinned to numpy<2.
+# bioio reads these through bioio-bioformats only, which needs a JVM, so they
+# have readers of their own below, each on a pure-Python library.
+LEICA_EXT = {".lof", ".xlef", ".xlif", ".xlcf"}     # .lif stays with bioio-lif
+OWN_EXT = {".vws", ".zvi", ".oib", ".oif", ".oir", ".ims", ".obf", ".msr"} | LEICA_EXT
+# tifffile reads these, bioio-tifffile just does not claim the extension
+TIFF_EXT = {".stk", ".btf", ".tf8"}
 SUPPORTED_EXT = {
     ".czi", ".tif", ".tiff", ".ome.tif", ".ome.tiff", ".lsm", ".nd2",
-    ".lif", ".oib", ".oif", ".zvi", ".ims",
-} | RASTER_EXT
+    ".lif", ".dv", ".r3d", ".sldy",
+} | OWN_EXT | TIFF_EXT | RASTER_EXT
 
 # Fallback colors cycled through when a file gives us no color hints.
 DEFAULT_COLORS = ["#00FF00", "#FF00FF", "#00FFFF", "#FFFF00", "#FF0000", "#FFFFFF"]
@@ -287,9 +292,27 @@ def _real_scenes(img) -> List[int]:
     return keep or list(range(len(img.scenes)))
 
 
-def _read_bioformat(path: str, t: int, z_mode: str, z_index: int, scene: int):
+def _open(path: str):
+    ext = os.path.splitext(path)[1].lower()
+    own = {".vws": _till, ".zvi": _zvi, ".oib": _oif, ".oif": _oif, ".ims": _ims,
+           ".oir": _oir, ".obf": _obf, ".msr": _obf}.get(ext)
+    if ext in LEICA_EXT:
+        own = _leica
+    if own:
+        return own(path)
     from bioio import BioImage
-    img = BioImage(path)
+    if ext in (".dv", ".r3d"):
+        # bioio-imageio claims .dv too (DV video), so name the reader
+        import bioio_dv
+        return BioImage(path, reader=bioio_dv.Reader)
+    if ext in TIFF_EXT:
+        import bioio_tifffile
+        return BioImage(path, reader=bioio_tifffile.Reader)
+    return BioImage(path)
+
+
+def _read_bioformat(path: str, t: int, z_mode: str, z_index: int, scene: int):
+    img = _open(path)
     try:
         scenes = _real_scenes(img)
     except Exception:
@@ -371,6 +394,341 @@ def _physical_pixel_size(img, path: str) -> Tuple[Optional[float], str]:
         except Exception:
             pass
     return None, "none"
+
+
+# ---- formats bioio has no JVM-free reader for --------------------------------
+
+class _Frames:
+    """The slice of BioImage that _read_bioformat reads, for the formats below:
+    `frame(t)` hands back one time point as (C, Z, Y, X)."""
+    scenes = ("Image:0",)
+
+    def __init__(self, frame, n_t: int, n_z: int, names: List[str], px=None):
+        from types import SimpleNamespace
+        self.get_image_data = lambda order, T=0: frame(T)
+        self.channel_names = names
+        self.dims = SimpleNamespace(T=n_t, Z=n_z, order="TCZYX")
+        self.physical_pixel_sizes = SimpleNamespace(X=px)
+
+    def set_scene(self, i: int) -> None:
+        pass
+
+
+class _Scenes:
+    """Several _Frames behind one file, picked with set_scene: the images of a
+    Leica project, the stack groups of an Abberior file."""
+
+    def __init__(self, frames: List[_Frames]):
+        if not frames:
+            raise ValueError("the file holds no images")
+        self.scenes = tuple(f"Image:{i}" for i in range(len(frames)))
+        self._all, self._cur = frames, frames[0]
+
+    def set_scene(self, i: int) -> None:
+        self._cur = self._all[i]
+
+    def __getattr__(self, key):
+        return getattr(self._cur, key)
+
+
+def _labelled(objs: list, to_um: float) -> _Frames:
+    """liffile, oirfile and obffile all describe an image the same way: ordered
+    `sizes`, `coords` and `asarray()` in that order, nothing read until asked.
+    Several objects of one shape become the channels of one image (an OBF file
+    keeps each channel as a stack of its own).  Without a channel axis, RGB
+    samples or the bands of a lambda scan stand in as channels.  An axis
+    MicroFig has no use for -- mosaic tiles, phase -- is cut to its first entry."""
+    first = objs[0]
+    spare = None if "C" in first.sizes else next((d for d in "SL" if d in first.sizes), None)
+    dims = ["C" if d == spare else d for d in first.sizes]
+    n = dict(zip(dims, first.sizes.values()))
+    co = first.coords
+    x = np.asarray(co.get("X", []), dtype=float)
+    px = abs(x[-1] - x[0]) / (len(x) - 1) * to_um if len(x) > 1 else None
+    if px and px > 1e4:
+        px = None             # an uncalibrated image counts in pixels: a 1 m pixel
+    names = []
+    for o in objs:
+        c = o.coords.get("C", o.coords.get(spare))
+        nc = n.get("C", 1)
+        if c is not None and len(c) == nc:
+            names += [f"{float(v):g} nm" if spare == "L" else str(v) for v in c]
+        else:
+            names += [str(o.name)] if nc == 1 and len(objs) > 1 else \
+                     [f"Channel {len(names) + i + 1}" for i in range(nc)]
+    cache = {}
+
+    def frame(t):
+        if "a" not in cache:
+            parts = []
+            for o in objs:
+                # ponytail: reads the whole image once; a long time series pays
+                # that on every time-point change.  Read per frame if it hurts.
+                a, d = np.asarray(o.asarray()), list(dims)
+                for ax in [k for k in d if k not in "TCZYX"]:
+                    a = a.take(0, axis=d.index(ax))
+                    d.remove(ax)
+                for ax in "TCZ":
+                    if ax not in d:
+                        a, d = a[None], [ax] + d
+                parts.append(a.transpose([d.index(k) for k in "TCZYX"]))
+            cache["a"] = np.concatenate(parts, axis=1)
+        return cache["a"][t]
+
+    return _Frames(frame, n.get("T", 1), n.get("Z", 1), names, px)
+
+
+def _leica(path: str) -> _Scenes:
+    """Leica LAS X LOF, XLEF, XLIF, XLCF, through liffile.  A project holds many
+    images, one scene each; lengths are in metres."""
+    import functools
+    from urllib.parse import unquote
+    import liffile
+
+    class Lif(liffile.LifFile):
+        # liffile opens every file a project links to, all or nothing, so one
+        # missing histogram (absent even from the OME sample project) or one
+        # member not copied along loses the whole project.  Skip what is missing.
+        @functools.cached_property
+        def children(self):
+            kids = []
+            for ref in self.xml_element.findall("./Element/Children/Reference"):
+                if ref.attrib.get("File"):
+                    name = os.path.normpath(unquote(ref.attrib["File"])).replace("\\", "/")
+                    try:
+                        kids.append(Lif(liffile.liffile.case_sensitive_path(
+                            os.path.join(self.dirname, name)), _parent=self))
+                    except (OSError, ValueError):
+                        pass
+            return tuple(kids)
+
+    lif = Lif(path)                      # left open: the scenes read from it later
+    return _Scenes([_labelled([im], 1e6) for im in lif.images])
+
+
+def _oir(path: str) -> _Frames:
+    """Olympus/Evident FluoView OIR (FV3000, FV4000), through oirfile;
+    lengths are in micrometres."""
+    import oirfile
+    return _labelled([oirfile.OirFile(path)], 1.0)
+
+
+def _obf(path: str) -> _Scenes:
+    """Abberior Imspector OBF and MSR, through obffile.  Each channel and mode
+    is a stack of its own; the stacks of one shape were acquired together, so
+    they become the channels of one scene.  Lengths are in metres."""
+    import obffile
+    try:
+        obf = obffile.ObfFile(path)
+    except obffile.ObfFileError:
+        # ponytail: Imspector also saves .msr as a serialized document ("CDataStack"
+        # near the top), which only Bio-Formats' ImspectorReader parses
+        raise ValueError("this .msr is an Imspector document, not OBF: "
+                         "save it as .obf from Imspector") from None
+    groups: Dict[tuple, list] = {}
+    for st in obf.stacks:
+        groups.setdefault(tuple(st.sizes.items()), []).append(st)
+    return _Scenes([_labelled(g, 1e6) for g in groups.values()])
+
+
+def _ole_values(b: bytes) -> list:
+    """Walk a Zeiss property stream: a 2-byte VARIANT type, then its value.  Stops
+    at the first type it does not know, which is where the pixels start."""
+    import struct
+    out, i = [], 0
+    while i + 2 <= len(b):
+        vt, = struct.unpack_from("<H", b, i)
+        i += 2
+        if vt in (2, 11):
+            v, = struct.unpack_from("<h", b, i); i += 2
+        elif vt in (3, 19):
+            v, = struct.unpack_from("<i", b, i); i += 4
+        elif vt in (5, 7):
+            v, = struct.unpack_from("<d", b, i); i += 8
+        elif vt == 8:
+            n, = struct.unpack_from("<i", b, i); i += 4
+            v = b[i:i + n].decode("utf-16-le", "replace").rstrip("\0"); i += n
+        elif vt in (0, 1):
+            v = None
+        else:
+            break
+        out.append(v)
+    return out
+
+
+def _till(path: str) -> _Frames:
+    """TILL Photonics TILLvisION.  The .vws is only the workspace; the pixels sit
+    beside it in <name>.pst/, one raw .pst plus a text .inf per recording, always
+    16-bit (Datatype=4 in all 86,800 headers on this machine).  A folder mixes a
+    time series with single snapshots of other wavelengths, so a channel with
+    fewer frames holds its last one -- the snapshot shows at every time point.
+    A workspace with no folder (4 % here) either was renamed after recording and
+    still names its old folder, or kept unsaved snapshots inside itself."""
+    import configparser
+    import glob
+    import re
+    try:
+        import olefile
+        ws = olefile.OleFileIO(path).openstream("Contents").read()
+    except Exception:
+        ws = b""
+    here = os.path.dirname(path)
+    folder = os.path.splitext(path)[0] + ".pst"
+    if not glob.glob(os.path.join(folder, "*.inf")):
+        # the name is length-prefixed, and the prefix byte can be printable:
+        # take the first suffix that is a folder.  Anchored on the literal end:
+        # pixel bytes run printable for 65 kB, and a leading [^...]+ scanned
+        # them quadratically -- 4 s a workspace
+        for m in re.finditer(rb"\.pst\\\w+\.pst", ws):
+            name = re.search(rb"[^\x00-\x1f\\]*$", ws[max(0, m.start() - 255):m.start()])
+            name = name.group().decode("latin-1") + ".pst"
+            hit = next((name[k:] for k in range(len(name))
+                        if os.path.isdir(os.path.join(here, name[k:]))), None)
+            if hit:
+                folder = os.path.join(here, hit)
+                break
+    infs = sorted(glob.glob(os.path.join(folder, "*.inf")))
+    if not infs:
+        chans = _till_embedded(ws)
+        if not chans:
+            raise ValueError(f"no pixels: TILLvisION keeps them in {os.path.basename(folder)}/ "
+                             "next to the workspace, and it is not there")
+        names = [f"snapshot {k + 1}" for k in range(len(chans))]
+    else:
+        chans = []
+        for inf in infs:
+            c = configparser.ConfigParser()
+            c.read(inf)
+            w, h, n = (int(c["Info"][k]) for k in ("Width", "Height", "Frames"))
+            # a .pst deleted under its .inf reads as an empty recording
+            pst = inf[:-4] + ".pst"
+            raw = np.fromfile(pst, "<u2") if os.path.exists(pst) else np.zeros(0, "<u2")
+            n = min(n, raw.size // (w * h))          # an aborted recording stops short
+            chans.append(raw[:n * w * h].reshape(n, h, w))
+        wl = _till_names(ws)
+        names = [wl.get(os.path.basename(i)[:-4], os.path.basename(i)[:-4])
+                 for i, c in zip(infs, chans) if len(c)]
+        chans = [c for c in chans if len(c)]
+        if not chans:
+            raise ValueError("every recording in this TILLvisION workspace is empty")
+    return _Frames(lambda t: np.stack([c[min(t, len(c) - 1)] for c in chans])[:, None],
+                   max(len(c) for c in chans), 1, names)
+
+
+def _till_embedded(ws: bytes) -> List[np.ndarray]:
+    """Snapshots inside the workspace: the six numbers of an .inf header as
+    int32s (width, height, bands 1, slices, frames, datatype 4), then a path,
+    then the byte count twice, then the pixels."""
+    import re
+    import struct
+    out = []
+    for m in re.finditer(rb"(?s)(.{4})(.{4})\x01\0\0\0(.{4})(.{4})\x04\0\0\0", ws):
+        w, h, sl, fr = (int.from_bytes(g, "little") for g in m.groups())
+        if not (8 <= w <= 8192 and 8 <= h <= 8192 and 1 <= sl * fr <= 100_000):
+            continue
+        n = w * h * sl * fr
+        j = ws.find(struct.pack("<2I", 2 * n, 2 * n), m.end(), m.end() + 400)
+        if j >= 0 and j + 8 + 2 * n <= len(ws):
+            out.append(np.frombuffer(ws, "<u2", n, j + 8).reshape(sl * fr, h, w))
+    return [a for a in out if a.shape[1:] == out[0].shape[1:]]
+
+
+def _till_names(ws: bytes) -> Dict[str, str]:
+    """Each recording's excitation wavelength, out of the workspace: the
+    monochromator line comes just before the .pst file it belongs to."""
+    import re
+    names, last = {}, None
+    for m in re.finditer(rb"Monochromator wavelength \[nm\]: (\d+)|\\(\w+)\.pst", ws):
+        if m.group(1):
+            last = m.group(1).decode() + " nm"
+        elif last:
+            names[m.group(2).decode()] = last
+    return names
+
+
+def _zvi(path: str) -> _Frames:
+    """Zeiss AxioVision ZVI: an OLE document with one Image/Item(n) stream per
+    plane.  The plane ends its stream, after a block header of a 0x10002000 marker
+    and six int32s (width, height, depth, bytes per pixel, format, valid bits).
+    Planes are grouped into channels by their channel-name tag (1284) and kept
+    in file order as time points."""
+    import olefile
+    import struct
+    ole = olefile.OleFileIO(path)
+    items = sorted(int(e[1][5:-1]) for e in ole.listdir()
+                   if len(e) == 3 and e[1].startswith("Item(") and e[2] == "Contents")
+    chans: Dict[str, list] = {}
+    for k in items:
+        b = ole.openstream(f"Image/Item({k})/Contents").read()
+        i = b.find(b"\x00\x20\x00\x10")
+        w, h, _, bpp, _, _ = struct.unpack_from("<6i", b, i + 4)
+        # ponytail: grayscale only (1 or 2 bytes a pixel); a BGR ZVI raises here
+        if bpp not in (1, 2):
+            raise ValueError(f"color ZVI ({bpp} bytes a pixel) is not supported")
+        plane = np.frombuffer(b, "<u2" if bpp == 2 else "u1", w * h, i + 28).reshape(h, w)
+        tag = f"Image/Item({k})/Tags/Contents"
+        v = _ole_values(ole.openstream(tag).read()) if ole.exists(tag) else []
+        name = {v[j + 1]: v[j] for j in range(2, len(v) - 2, 3)}.get(1284) or "Channel 1"
+        chans.setdefault(str(name), []).append(plane)
+    # ponytail: Z and T both arrive as frames -- every ZVI here is a time series;
+    # split on the index tags (2820/2821) if a z-stack ever turns up
+    stacks = [np.stack(p) for p in chans.values()]
+    n_t = min(len(s) for s in stacks)
+    px = None
+    if ole.exists("Image/Scaling/Contents"):
+        v = _ole_values(ole.openstream("Image/Scaling/Contents").read())
+        if len(v) > 4 and v[4] == 76 and v[3]:   # unit code 76 is micrometres
+            px = float(v[3])
+    return _Frames(lambda t: np.stack([s[t] for s in stacks])[:, None],
+                   n_t, 1, list(chans), px)
+
+
+def _oif(path: str) -> _Frames:
+    """Olympus FluoView OIB (one OLE file) and OIF (a text file plus a folder of
+    TIFFs), through oiffile.  Read whole: FluoView stacks are small enough."""
+    import re
+    import oiffile
+    with oiffile.OifFile(path) as f:
+        a, axes, m = f.asarray(), f.axes, f.mainfile
+    for ax in [x for x in axes if x not in "TCZYX"]:      # lambda, line scans ...
+        a, axes = a.take(0, axis=axes.index(ax)), axes.replace(ax, "")
+    for ax in "TCZ":
+        if ax not in axes:
+            a, axes = a[None], ax + axes
+    a = a.transpose([axes.index(x) for x in "TCZYX"])
+    ref = m.get("Reference Image Parameter", {})
+    px = ref.get("WidthConvertValue") if str(ref.get("WidthUnit", "")).lower() == "um" else None
+    # a German FluoView writes "0,207.0": the leading number, comma as the point
+    px = re.match(r"\d+(?:[.,]\d+)?", str(px or ""))
+    px = float(px.group().replace(",", ".")) if px else None
+    names = [str(m.get(f"Channel {c + 1} Parameters", {}).get("DyeName") or f"Channel {c + 1}")
+             for c in range(a.shape[1])]
+    return _Frames(lambda t: a[t], a.shape[0], a.shape[2], names, px)
+
+
+def _ims(path: str) -> _Frames:
+    """Imaris (.ims), which is HDF5: DataSet/ResolutionLevel 0/TimePoint t/
+    Channel c/Data holds (Z, Y, X), padded out to whole chunks -- the true size
+    is in DataSetInfo/Image, whose attributes are arrays of single bytes."""
+    import h5py
+    import hdf5plugin  # noqa: F401 -- registers LZ4 and friends, which Imaris 9+ writes
+    f = h5py.File(path, "r")
+
+    def attr(group, key, default=""):
+        a = f[group].attrs.get(key) if group in f else None
+        return a.tobytes().decode() if a is not None else default
+
+    info = "DataSetInfo/Image"
+    X, Y, Z = (int(attr(info, k)) for k in "XYZ")
+    px = None
+    if attr(info, "Unit", "um").lower() in ("um", "µm", "micron"):
+        px = (float(attr(info, "ExtMax0", "0")) - float(attr(info, "ExtMin0", "0"))) / X or None
+    res = f["DataSet/ResolutionLevel 0"]
+    n_c = len(res["TimePoint 0"])
+    names = [attr(f"DataSetInfo/Channel {c}", "Name") or f"Channel {c + 1}" for c in range(n_c)]
+    return _Frames(lambda t: np.stack([res[f"TimePoint {t}/Channel {c}/Data"][:Z, :Y, :X]
+                                       for c in range(n_c)]),
+                   len(res), Z, names, px)
 
 
 STORE = ImageStore()

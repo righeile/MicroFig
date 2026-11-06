@@ -314,6 +314,110 @@ def check_thumbnail_scene_hidden():
     print("  scenes: the LSM thumbnail is hidden, real scenes are not")
 
 
+def check_own_readers():
+    """TILLvisION, OIF, Imaris and DeltaVision, written here and read back
+    through STORE.load -- the path a dropped file takes.  ZVI is left out: no
+    writer exists, so it was checked against the ten real ones on this machine."""
+    import struct
+    import h5py
+    import mrc
+    import imgio
+    rng = np.random.default_rng(0)
+    load = lambda p, t=0: (lambda m: (m, imgio.STORE.get(m.id).data))(imgio.STORE.load(p, t=t))
+    with tempfile.TemporaryDirectory() as d:
+        # TILL: a 3-frame series and a 1-frame snapshot whose header claims more
+        # frames than were written; the workspace is not OLE, so names fall back
+        ws, pst = os.path.join(d, "w.vws"), os.path.join(d, "w.pst")
+        os.makedirs(pst)
+        open(ws, "wb").write(b"not a workspace")
+        series = rng.integers(0, 4096, (3, 8, 9), dtype=np.uint16)
+        snap = rng.integers(0, 4096, (1, 8, 9), dtype=np.uint16)
+        for stem, a, claim in (("dbb1", series, 3), ("dbb2", snap, 5)):
+            open(os.path.join(pst, stem + ".inf"), "w").write(
+                f"[Info]\nWidth=9\nHeight=8\nBands=1\nSlices=1\nFrames={claim}\nDatatype=4\n")
+            a.tofile(os.path.join(pst, stem + ".pst"))
+        m, a = load(ws, t=2)
+        assert m.n_t == 3 and [c.name for c in m.channels] == ["dbb1", "dbb2"], (m.n_t, m.channels)
+        assert (a[0] == series[2]).all() and (a[1] == snap[0]).all(), "TILL frames misread"
+        # the same snapshot kept inside a workspace, as the folderless ones are
+        blob = (b"junk" + struct.pack("<6i", 9, 8, 1, 1, 1, 4) + b"\x05C:\\x\\"
+                + struct.pack("<2I", 144, 144) + snap.tobytes() + b"tail")
+        got = imgio._till_embedded(blob)
+        assert len(got) == 1 and (got[0] == snap).all(), "embedded TILL snapshot misread"
+        # OIF: a text main file and a folder of one TIFF per plane
+        oif = os.path.join(d, "t.oif")
+        size = dict(X=6, Y=5, Z=3, C=2, T=1, A=1, L=1, P=1)
+        ini = ["[ProfileSaveInfo]", 'Name="t"', 'Version="1"', "[Axis Parameter Common]",
+               'AxisOrder="XYZC"', "[Reference Image Parameter]", "ValidBitCounts=12",
+               "WidthConvertValue=0,25.0", 'WidthUnit="um"', "[Channel 2 Parameters]", 'DyeName="Cy5"']
+        for i, c in enumerate(size):
+            ini += [f"[Axis {i} Parameters Common]", f'AxisCode="{c}"', f"MaxSize={size[c]}"]
+        open(oif, "w", encoding="utf-16").write("\r\n".join(ini) + "\r\n")
+        os.makedirs(oif + ".files")
+        czyx = rng.integers(0, 4096, (2, 3, 5, 6), dtype=np.uint16)
+        import tifffile
+        for c in range(2):
+            for z in range(3):
+                tifffile.imwrite(os.path.join(oif + ".files", f"s_C{c + 1:03d}Z{z + 1:03d}.tif"), czyx[c, z])
+        m, a = load(oif)
+        assert (a == czyx.max(axis=1)).all() and m.n_z == 3, "OIF misread"
+        assert [c.name for c in m.channels] == ["Channel 1", "Cy5"] and m.pixel_size_um == 0.25
+        # Imaris: chunk-padded planes, the true size and extent in byte-array attributes
+        ims = os.path.join(d, "t.ims")
+        tczyx = rng.integers(0, 4096, (2, 2, 3, 5, 6), dtype=np.uint16)
+        asb = lambda v: np.frombuffer(str(v).encode(), "S1")
+        with h5py.File(ims, "w") as f:
+            info = f.create_group("DataSetInfo/Image")
+            for k, v in dict(X=6, Y=5, Z=3, Unit="um", ExtMin0=0, ExtMax0=1.5).items():
+                info.attrs[k] = asb(v)
+            f.create_group("DataSetInfo/Channel 1").attrs["Name"] = asb("mCherry")
+            for t in range(2):
+                for c in range(2):
+                    pad = np.zeros((4, 8, 8), np.uint16)
+                    pad[:3, :5, :6] = tczyx[t, c]
+                    f[f"DataSet/ResolutionLevel 0/TimePoint {t}/Channel {c}/Data"] = pad
+        m, a = load(ims, t=1)
+        assert a.shape == (2, 5, 6) and (a == tczyx[1].max(axis=1)).all(), "Imaris misread"
+        assert [c.name for c in m.channels] == ["Channel 1", "mCherry"] and m.pixel_size_um == 0.25
+        # DeltaVision, through bioio-dv rather than the imageio video reader.
+        # mrc writes no wavelength header, so the three sections read as channels
+        dv = os.path.join(d, "t.dv")
+        cyx = rng.integers(0, 4096, (3, 5, 6), dtype=np.uint16)
+        mrc.imsave(dv, cyx, resolution=(0.1, 0.1, 0.3))
+        m, a = load(dv)
+        assert (a == cyx).all() and abs(m.pixel_size_um - 0.1) < 1e-6, "DV misread"
+        # BigTIFF under its own extension, through bioio-tifffile
+        btf = os.path.join(d, "t.btf")
+        tifffile.imwrite(btf, cyx, bigtiff=True, metadata={"axes": "CYX"})
+        m, a = load(btf)
+        assert (a == cyx).all(), "BigTIFF misread"
+    # liffile, oirfile and obffile all hand over sizes/coords/asarray; no writer
+    # exists for any of them, so a stand-in object takes the adapter's path:
+    # RGB samples become channels, mosaic tiles are cut to the first, metres scale
+    from types import SimpleNamespace as NS
+    six = rng.integers(0, 4096, (2, 3, 4, 5, 6, 2), dtype=np.uint16)   # T M Z Y X S
+    lif = NS(sizes=dict(zip("TMZYXS", six.shape)), name="Series 1", asarray=lambda: six,
+             coords={"X": np.linspace(0, 5 * 0.2e-6, 6), "S": ["R", "G"]})
+    f = imgio._labelled([lif], 1e6)
+    assert (f.dims.T, f.dims.Z, f.channel_names) == (2, 4, ["R", "G"])
+    assert abs(f.physical_pixel_sizes.X - 0.2) < 1e-9
+    assert (f.get_image_data("CZYX", T=1) == six[1, 0].transpose(3, 0, 1, 2)).all(), "adapter misread"
+    # an OBF file: two 2D stacks of one shape are one scene's two channels
+    sted, conf = (NS(sizes={"Y": 5, "X": 6}, name=n, coords={}, asarray=lambda a=a: a)
+                  for n, a in (("STED", cyx[0]), ("Confocal", cyx[1])))
+    sc = imgio._Scenes([imgio._labelled([sted, conf], 1e6), imgio._labelled([lif], 1e6)])
+    assert sc.channel_names == ["STED", "Confocal"] and (sc.get_image_data("CZYX")[:, 0] == cyx[:2]).all()
+    # a lambda scan's bands are its channels; pixel-index coords mean no calibration
+    lam = NS(sizes={"L": 3, "Y": 5, "X": 6}, name="", asarray=lambda: cyx,
+             coords={"L": [420.0, 470.0, 520.0], "X": np.arange(6.0)})
+    f = imgio._labelled([lam], 1e6)
+    assert f.channel_names == ["420 nm", "470 nm", "520 nm"] and f.physical_pixel_sizes.X is None
+    sc.set_scene(1)
+    assert sc.dims.Z == 4 and len(sc.scenes) == 2
+    print("  readers: TILLvisION, OIF, Imaris, DeltaVision, BigTIFF and the "
+          "Leica/OIR/OBF adapter read back what was written")
+
+
 if __name__ == "__main__":
     print("MicroFig self-check")
     check_levels_match()
@@ -325,4 +429,5 @@ if __name__ == "__main__":
     check_text_halo()
     check_plane_clamp()
     check_thumbnail_scene_hidden()
+    check_own_readers()
     print("all checks passed")
